@@ -1,8 +1,3 @@
-was missing.
-
-### Easiest fix
-
-Don't try to repair it line-by-line. Replace the entire `README.md` with this corrected version:
 
 ```markdown
 # VMStreamer
