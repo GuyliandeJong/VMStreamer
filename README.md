@@ -1,3 +1,10 @@
+was missing.
+
+### Easiest fix
+
+Don't try to repair it line-by-line. Replace the entire `README.md` with this corrected version:
+
+```markdown
 # VMStreamer
 
 A modern, lightweight control panel for **VoiceMeeter Potato**, designed with streamers and content creators in mind.
@@ -40,7 +47,7 @@ Each application provides:
 
 ### Microphone Processing
 
-VMStreamer provides direct control over VoiceMeeter's microphone processing:
+VMStreamer provides direct control over VoiceMeeter's microphone processing.
 
 #### Compressor
 
@@ -156,7 +163,7 @@ The application uses separate worker threads for Windows application audio monit
 Status
 VMStreamer is currently under active development.
 The core mixer, microphone processing, application routing, live audio meters, and Windows application volume controls are functional.
-Future improvements may include:
+Future Improvements
 - Additional VoiceMeeter controls
 - Improved configuration management
 - User-customizable layouts
