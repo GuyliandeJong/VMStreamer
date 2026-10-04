@@ -198,14 +198,76 @@ VMStreamer is currently under active development.
 
 The core mixer, microphone processing, application routing, live audio meters, and Windows application volume controls are functional.
 
-## Future Improvements
+## Future Features
 
-- Additional VoiceMeeter controls
-- Improved configuration management
-- User-customizable layouts
-- Presets
-- Streamer-focused workflow improvements
-- Installer and distribution improvements
+VMStreamer is actively developed. The following features are planned or being considered for future releases:
+
+### Configuration & Presets
+
+- [ ] Persistent application routing
+- [ ] Save and load mixer presets
+- [ ] Save microphone processing presets
+- [ ] Save application volume and mute states
+- [ ] Multiple named profiles such as Gaming, Streaming, Recording, and Away
+- [ ] User-configurable application sorting and layout
+- [ ] Dedicated settings window
+
+### Application Management
+
+- [ ] Display application icons
+- [ ] Remember application volume levels
+- [ ] Automatically route applications based on executable
+- [ ] Move applications between Game, Chat, and Media
+- [ ] Improved application session detection
+- [ ] Application routing rules
+
+### VoiceMeeter Controls
+
+- [ ] Pan / balance controls
+- [ ] Additional strip controls
+- [ ] A/B bus controls
+- [ ] Bus volume and mute controls
+- [ ] Hardware input controls
+- [ ] Additional VoiceMeeter routing options
+
+### Streamer Features
+
+- [ ] Global hotkeys
+- [ ] Global microphone mute
+- [ ] Game / Chat / Media volume hotkeys
+- [ ] Preset switching through hotkeys
+- [ ] Push-to-talk integration
+- [ ] System tray support
+- [ ] Start with Windows
+- [ ] Start minimized
+
+### Integrations
+
+- [ ] OBS Studio integration
+- [ ] Stream Deck integration
+- [ ] Local API for external applications and scripts
+- [ ] Home Assistant integration
+- [ ] Integration with other streaming tools
+
+### User Interface
+
+- [ ] Custom themes
+- [ ] Light mode
+- [ ] Custom accent colors
+- [ ] Compact mode
+- [ ] Improved high-DPI scaling
+- [ ] Customizable mixer layout
+- [ ] Additional visualization options
+
+### Distribution
+
+- [ ] Windows installer
+- [ ] Automatic updates
+- [ ] GitHub Releases
+- [ ] Versioned release builds
+- [ ] Release notes and changelogs
+
+> This roadmap is subject to change as VMStreamer evolves and new ideas are explored.
 
 ## License
 
