@@ -4,6 +4,10 @@ A modern, lightweight control panel for **VoiceMeeter Potato**, designed for str
 
 VMStreamer provides a clean interface for managing your microphone, mixer channels, Windows application audio, and microphone processing without constantly switching back to the VoiceMeeter interface.
 
+## Preview
+
+![VMStreamer interface](screenshots/vmstreamer.png)
+
 ## Features
 
 ### Mixer Control
