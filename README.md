@@ -209,7 +209,9 @@ The core mixer, microphone processing, application routing, live audio meters, a
 
 ## License
 
-License information will be added as the project develops.
+VMStreamer is licensed under the [MIT License](LICENSE).
+
+VMStreamer is an independent third-party project and is not affiliated with or endorsed by VB-Audio Software.
 
 ---
 
