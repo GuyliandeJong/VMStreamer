@@ -1927,193 +1927,14 @@ class LiveVolumeSlider(FineControlSlider):
         painter.end()
 
 
-class ApplicationRow(QWidget):
-    """One automatically detected Windows application audio session."""
-
-    def __init__(
-        self, session_key, app_name, display_name, bus, controller,
-        executable_path="",
-    ):
-        super().__init__()
-        self.session_key = session_key
-        self.app_name = app_name
-        self.display_name = display_name or app_name
-        if self.display_name.casefold() == self.app_name.casefold():
-            friendly_names = {
-                "steam.exe": "Steam",
-                "discord.exe": "Discord",
-                "signalrgb.exe": "SignalRGB",
-                "brave.exe": "Brave Browser",
-                "steamwebhelper.exe": "Steam Client Web",
-                "chatgpt.exe": "ChatGPT",
-            }
-            self.display_name = friendly_names.get(
-                self.app_name.casefold(),
-                os.path.splitext(self.display_name)[0],
-            )
-        self.bus = bus
-        self.controller = controller
-        self._syncing = False
-        self._display_peak = 0.0
-        self._peak_hold_until = 0.0
-        self._last_meter_update = time.monotonic()
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(2, 1, 2, 1)
-        layout.setSpacing(1)
-        self.setSizePolicy(
-            QSizePolicy.Policy.Preferred,
-            QSizePolicy.Policy.Fixed,
-        )
-        self.setMaximumHeight(44)
-
-        self.name_label = QLabel(self.display_name)
-        self.name_label.setToolTip(
-            f"{self.app_name} — this audio session is routed to {bus}"
-        )
-        self.name_label.setMinimumWidth(0)
-        self.name_label.setMaximumWidth(16777215)
-
-        self.icon_label = QLabel()
-        self.icon_label.setFixedSize(20, 20)
-        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.icon_label.setToolTip(self.display_name)
-        try:
-            if executable_path and os.path.isfile(executable_path):
-                app_icon = QFileIconProvider().icon(QFileInfo(executable_path))
-                self.icon_label.setPixmap(app_icon.pixmap(20, 20))
-        except Exception:
-            # Keep the detected application row usable if Windows cannot
-            # provide an executable icon (for example, a short-lived process).
-            pass
-
-        self.volume_slider = LiveVolumeSlider(Qt.Orientation.Horizontal)
-        self.volume_slider.setRange(0, 100)
-        self.volume_slider.setMinimumWidth(0)
-        self.volume_slider.setFixedHeight(19)
-        self.volume_slider.setToolTip(
-            "Click or drag anywhere on the bar to set volume. Scroll for 1% steps. "
-            "green fill shows live audio level."
-        )
-        self.volume_slider.setStyleSheet(
-            "QSlider::groove:horizontal { background: transparent; height: 6px; }"
-            "QSlider::handle:horizontal { background: #58a6ff; width: 16px; "
-            "margin: -5px 0; border-radius: 4px; }"
-        )
-        self.volume_slider.valueChanged.connect(self.on_volume_changed)
-
-        self.volume_percent = QLabel("100%")
-        self.volume_percent.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.volume_percent.setFixedWidth(34)
-        self.volume_percent.setStyleSheet("color: #d6e2ef; font-size: 10px;")
-
-        self.mute_button = QPushButton("🔊")
-        self.mute_button.setCheckable(True)
-        self.mute_button.setFixedSize(28, 24)
-        self.mute_button.setStyleSheet(
-            "QPushButton { background: #18232e; border: 1px solid #314558; "
-            "border-radius: 6px; font-size: 14px; padding: 1px; }"
-            "QPushButton:checked { background: #54262c; border-color: #a8434f; }"
-        )
-        self.mute_button.setToolTip("Mute this application session")
-        self.mute_button.clicked.connect(self.on_mute_clicked)
-
-        heading = QHBoxLayout()
-        heading.setContentsMargins(0, 0, 0, 0)
-        heading.setSpacing(4)
-        heading.addWidget(self.icon_label)
-        heading.addWidget(self.name_label, 1)
-        heading.addWidget(self.mute_button)
-
-        volume_row = QHBoxLayout()
-        volume_row.setContentsMargins(0, 0, 0, 0)
-        volume_row.setSpacing(0)
-
-        volume_row.addWidget(self.volume_slider, 1)
-        volume_row.addWidget(self.volume_percent)
-
-        layout.setContentsMargins(3, 2, 3, 2)
-        layout.setSpacing(2)
-        layout.addLayout(heading)
-        layout.addLayout(volume_row)
-
-        self.sync_from_session()
-
-    def on_volume_changed(self, value):
-        self.volume_percent.setText(f"{value}%")
-        self.volume_slider.setToolTip(
-            f"App volume: {value}% • scroll for 1% steps"
-        )
-        if self._syncing:
-            return
-        self.controller.set_app_volume(self.session_key, self.bus, value / 100.0)
-
-    def on_mute_clicked(self, checked):
-        self.mute_button.setText("🔇" if checked else "🔊")
-        if self._syncing:
-            return
-        self.controller.set_app_mute(self.session_key, self.bus, checked)
-
-    def sync_from_session(self):
-        state = self.controller.get_app_state(self.session_key, self.bus)
-        if state is None:
-            return
-
-        self._syncing = True
-        try:
-            value = int(round(state["volume"] * 100))
-            self.volume_slider.setValue(value)
-            self.volume_percent.setText(f"{value}%")
-            self.volume_slider.setToolTip(
-                f"App volume: {value}% • scroll for 1% steps"
-            )
-            self.mute_button.setChecked(state["muted"])
-            self.mute_button.setText("🔇" if state["muted"] else "🔊")
-        finally:
-            self._syncing = False
-
-    def sync_audio_level(self):
-        peak = self.controller.get_session_peak(self.session_key, self.bus)
-        meter_unavailable = peak is None
-        peak = 0.0 if meter_unavailable else max(0.0, min(1.0, float(peak)))
-        now = time.monotonic()
-        elapsed = max(0.0, min(0.25, now - self._last_meter_update))
-        self._last_meter_update = now
-
-        # Windows' session peak can briefly dip between polling ticks. Hold
-        # recent peaks very briefly, then decay smoothly so the UI doesn't
-        # visibly hitch while still responding quickly when audio stops.
-        if peak >= self._display_peak:
-            self._display_peak = peak
-            if peak > 0.001:
-                self._peak_hold_until = now + 0.045
-        elif now >= self._peak_hold_until:
-            decay_seconds = 0.20
-            decay = math.exp(-elapsed / decay_seconds)
-            self._display_peak = max(peak, self._display_peak * decay)
-
-        peak = self._display_peak
-        if peak <= 0.001:
-            level_db = -60.0
-        else:
-            level_db = 20.0 * math.log10(peak)
-        level_db = max(-60.0, min(0.0, level_db))
-        value = int(round((level_db + 60.0) * (1000.0 / 60.0)))
-        self.volume_slider.set_audio_level(value / 1000.0)
-        if meter_unavailable:
-            self.volume_slider.setToolTip(
-                "A live peak meter is unavailable for this audio session"
-            )
-        else:
-            volume = self.volume_slider.value()
-            self.volume_slider.setToolTip(
-                f"App volume: {volume}% • scroll for 1% steps • "
-                f"live peak: {level_db:.1f} dBFS"
-            )
-
-
 class ApplicationAudioWorker(QObject):
-    """Own all pycaw/COM work on a dedicated worker thread."""
+    """Own all pycaw/COM work on a dedicated worker thread.
+
+    Windows can expose multiple audio sessions for one application. VMStreamer
+    groups those sessions by application and VoiceMeeter bus so the UI shows
+    one row per application while volume, mute, and live metering still apply
+    to every underlying session.
+    """
 
     topology_updated = Signal(object)
     peaks_updated = Signal(object)
@@ -2121,17 +1942,68 @@ class ApplicationAudioWorker(QObject):
     error = Signal(str)
     finished = Signal()
 
+    FRIENDLY_NAMES = {
+        "steam.exe": "Steam",
+        "steamwebhelper.exe": "Steam Client Web",
+        "discord.exe": "Discord",
+        "signalrgb.exe": "SignalRGB",
+        "signalrgbcore.exe": "SignalRGB Core",
+        "brave.exe": "Brave Browser",
+        "chatgpt.exe": "ChatGPT",
+        "ms-teams.exe": "Microsoft Teams",
+        "msteams.exe": "Microsoft Teams",
+        "teams.exe": "Microsoft Teams",
+        "msedgewebview2.exe": "Microsoft Edge WebView2",
+        "msedge.exe": "Microsoft Edge",
+        "chrome.exe": "Google Chrome",
+        "firefox.exe": "Mozilla Firefox",
+        "obs64.exe": "OBS Studio",
+        "obs32.exe": "OBS Studio",
+        "spotify.exe": "Spotify",
+        "vlc.exe": "VLC media player",
+        "explorer.exe": "Windows Explorer",
+        "code.exe": "Visual Studio Code",
+        "devenv.exe": "Visual Studio",
+        "notepad.exe": "Notepad",
+        "discordptb.exe": "Discord PTB",
+        "discordcanary.exe": "Discord Canary",
+    }
+
     def __init__(self):
         super().__init__()
         self.sessions = {}
         self.refresh_timer = None
-        self.meter_timer = None
         self.state_timer = None
         self._peak_thread = None
         self._peak_stop = threading.Event()
         self._session_lock = threading.RLock()
         self._com_initialized = False
         self._last_peak_emit = 0.0
+
+    @staticmethod
+    def friendly_name(app_name, display_name=""):
+        """Return a stable human-friendly application name.
+
+        Prefer a known executable mapping. If the executable is unknown, use
+        a meaningful Windows session display name when available, otherwise
+        turn the executable filename into a readable name rather than exposing
+        a raw .exe filename.
+        """
+        raw = (app_name or "").strip()
+        key = raw.casefold()
+        mapped = ApplicationAudioWorker.FRIENDLY_NAMES.get(key)
+        if mapped:
+            return mapped
+
+        session_name = (display_name or "").strip()
+        if session_name and session_name.casefold() not in {key, f"{key}.exe"}:
+            return session_name.removesuffix(".exe")
+
+        base = os.path.splitext(raw)[0].replace("_", " ").replace("-", " ")
+        base = " ".join(base.split())
+        if not base:
+            return "Unknown Application"
+        return base.title()
 
     @Slot()
     def start(self):
@@ -2154,8 +2026,6 @@ class ApplicationAudioWorker(QObject):
         self.refresh_timer.timeout.connect(self.refresh_sessions)
         self.refresh_timer.start()
 
-        # Sample application peaks on a dedicated Python thread instead of a
-        # Qt timer so Windows/Qt scheduling cannot introduce long sampling gaps.
         self._peak_stop.clear()
         self._peak_thread = threading.Thread(
             target=self._peak_loop,
@@ -2185,8 +2055,6 @@ class ApplicationAudioWorker(QObject):
             self.update_peaks()
             next_sample += interval
 
-            # If the thread was delayed for a long time, don't execute a
-            # burst of catch-up samples. Start the next interval from now.
             if next_sample < time.monotonic() - interval:
                 next_sample = time.monotonic() + interval
 
@@ -2214,9 +2082,6 @@ class ApplicationAudioWorker(QObject):
                     from pycaw.api.audiopolicy import IAudioSessionControl2
                     from pycaw.api.endpointvolume import IAudioMeterInformation
 
-                    # Keep the original session control alive. Windows exposes
-                    # IAudioMeterInformation on the audio-session control on
-                    # systems that support per-session metering.
                     control2 = control.QueryInterface(IAudioSessionControl2)
                     session = AudioSession(control2)
 
@@ -2251,6 +2116,13 @@ class ApplicationAudioWorker(QObject):
             getattr(session, "Identifier", "") or "",
             getattr(session, "DisplayName", "") or "",
         )
+
+    @staticmethod
+    def _group_key(bus, app_name, executable_path):
+        path = (executable_path or "").strip().casefold()
+        if path:
+            return (bus, app_name.casefold(), path)
+        return (bus, app_name.casefold())
 
     @staticmethod
     def _read_state(session):
@@ -2309,8 +2181,8 @@ class ApplicationAudioWorker(QObject):
                 if data_flow != EDataFlow.eRender.value:
                     continue
 
-                friendly_name = getattr(device, "FriendlyName", None) or ""
-                bus = self.bus_for_device(friendly_name)
+                friendly_device_name = getattr(device, "FriendlyName", None) or ""
+                bus = self.bus_for_device(friendly_device_name)
                 if bus is None:
                     continue
 
@@ -2342,23 +2214,53 @@ class ApplicationAudioWorker(QObject):
                         except Exception:
                             executable_path = ""
 
+                        group_key = self._group_key(
+                            bus,
+                            app_name,
+                            executable_path,
+                        )
+
                         state = self._read_state(session) or {
                             "volume": 1.0,
                             "muted": False,
                         }
 
-                        found[session_key] = {
-                            "app_name": app_name,
-                            "display_name": session.DisplayName or name,
-                            "bus": bus,
+                        if group_key not in found:
+                            display_name = self.friendly_name(
+                                app_name,
+                                getattr(session, "DisplayName", "") or "",
+                            )
+                            found[group_key] = {
+                                "session_key": group_key,
+                                "app_name": app_name,
+                                "display_name": display_name,
+                                "bus": bus,
+                                "executable_path": executable_path,
+                                "sessions": [],
+                                "volume": state["volume"],
+                                "muted": state["muted"],
+                            }
+
+                        found[group_key]["sessions"].append({
+                            "session_key": session_key,
                             "session": session,
                             "meter": meter,
-                            "executable_path": executable_path,
                             "volume": state["volume"],
                             "muted": state["muted"],
-                        }
+                        })
                     except Exception:
                         continue
+
+            # Keep one stable application entry per executable + VoiceMeeter bus.
+            # The individual Windows sessions remain available underneath it.
+            for info in found.values():
+                members = info["sessions"]
+                if members:
+                    info["volume"] = float(members[0]["volume"])
+                    info["muted"] = all(
+                        bool(member["muted"])
+                        for member in members
+                    )
 
             with self._session_lock:
                 self.sessions = found
@@ -2372,6 +2274,7 @@ class ApplicationAudioWorker(QObject):
                     "executable_path": info["executable_path"],
                     "volume": info["volume"],
                     "muted": info["muted"],
+                    "session_count": len(info["sessions"]),
                 }
                 for key, info in found.items()
             ]
@@ -2388,13 +2291,20 @@ class ApplicationAudioWorker(QObject):
 
     @Slot()
     def update_peaks(self):
-        """Sample application peaks and publish them at approximately 60 Hz."""
         peaks = {}
         with self._session_lock:
             session_items = list(self.sessions.items())
 
-        for session_key, info in session_items:
-            peaks[session_key] = self._read_peak(info.get("meter"))
+        for group_key, info in session_items:
+            group_peak = 0.0
+            meter_available = False
+            for member in info.get("sessions", []):
+                peak = self._read_peak(member.get("meter"))
+                if peak is None:
+                    continue
+                meter_available = True
+                group_peak = max(group_peak, peak)
+            peaks[group_key] = group_peak if meter_available else None
 
         now = time.monotonic()
         if now - self._last_peak_emit >= (1.0 / 60.0):
@@ -2404,13 +2314,36 @@ class ApplicationAudioWorker(QObject):
     @Slot()
     def update_states(self):
         states = {}
-        for session_key, info in list(self.sessions.items()):
-            state = self._read_state(info["session"])
-            if state is None:
+        with self._session_lock:
+            session_items = list(self.sessions.items())
+
+        for group_key, info in session_items:
+            members = info.get("sessions", [])
+            if not members:
                 continue
-            info["volume"] = state["volume"]
-            info["muted"] = state["muted"]
-            states[session_key] = state
+
+            member_states = []
+            for member in members:
+                state = self._read_state(member["session"])
+                if state is None:
+                    continue
+                member["volume"] = state["volume"]
+                member["muted"] = state["muted"]
+                member_states.append(state)
+
+            if not member_states:
+                continue
+
+            info["volume"] = float(member_states[0]["volume"])
+            info["muted"] = all(
+                bool(state["muted"])
+                for state in member_states
+            )
+            states[group_key] = {
+                "volume": info["volume"],
+                "muted": info["muted"],
+            }
+
         if states:
             self.states_updated.emit(states)
 
@@ -2419,19 +2352,32 @@ class ApplicationAudioWorker(QObject):
         info = self.sessions.get(session_key)
         if not info or info["bus"] != bus:
             return
+
         try:
             volume = max(0.0, min(1.0, float(volume)))
-            info["session"].SimpleAudioVolume.SetMasterVolume(volume, None)
-            info["volume"] = volume
-            self.states_updated.emit({
-                session_key: {
-                    "volume": volume,
-                    "muted": bool(info["muted"]),
-                }
-            })
+            successful = 0
+            for member in info.get("sessions", []):
+                try:
+                    member["session"].SimpleAudioVolume.SetMasterVolume(
+                        volume,
+                        None,
+                    )
+                    member["volume"] = volume
+                    successful += 1
+                except Exception:
+                    continue
+
+            if successful:
+                info["volume"] = volume
+                self.states_updated.emit({
+                    session_key: {
+                        "volume": volume,
+                        "muted": bool(info["muted"]),
+                    }
+                })
         except Exception as exc:
             self.error.emit(
-                f"Failed to set {info['app_name']} volume on {bus}: "
+                f"Failed to set {info['display_name']} volume on {bus}: "
                 f"{type(exc).__name__}: {exc}"
             )
 
@@ -2440,21 +2386,31 @@ class ApplicationAudioWorker(QObject):
         info = self.sessions.get(session_key)
         if not info or info["bus"] != bus:
             return
+
         try:
-            info["session"].SimpleAudioVolume.SetMute(
-                1 if muted else 0,
-                None,
-            )
-            info["muted"] = bool(muted)
-            self.states_updated.emit({
-                session_key: {
-                    "volume": float(info["volume"]),
-                    "muted": bool(muted),
-                }
-            })
+            successful = 0
+            for member in info.get("sessions", []):
+                try:
+                    member["session"].SimpleAudioVolume.SetMute(
+                        1 if muted else 0,
+                        None,
+                    )
+                    member["muted"] = bool(muted)
+                    successful += 1
+                except Exception:
+                    continue
+
+            if successful:
+                info["muted"] = bool(muted)
+                self.states_updated.emit({
+                    session_key: {
+                        "volume": float(info["volume"]),
+                        "muted": bool(muted),
+                    }
+                })
         except Exception as exc:
             self.error.emit(
-                f"Failed to mute {info['app_name']} on {bus}: "
+                f"Failed to mute {info['display_name']} on {bus}: "
                 f"{type(exc).__name__}: {exc}"
             )
 
@@ -2495,20 +2451,10 @@ class ApplicationRow(QWidget):
         super().__init__()
         self.session_key = session_key
         self.app_name = app_name
-        self.display_name = display_name or app_name
-        if self.display_name.casefold() == self.app_name.casefold():
-            friendly_names = {
-                "steam.exe": "Steam",
-                "discord.exe": "Discord",
-                "signalrgb.exe": "SignalRGB",
-                "brave.exe": "Brave Browser",
-                "steamwebhelper.exe": "Steam Client Web",
-                "chatgpt.exe": "ChatGPT",
-            }
-            self.display_name = friendly_names.get(
-                self.app_name.casefold(),
-                os.path.splitext(self.display_name)[0],
-            )
+        self.display_name = ApplicationAudioWorker.friendly_name(
+            self.app_name,
+            display_name,
+        )
         self.bus = bus
         self.controller = controller
         self._syncing = False
@@ -2527,7 +2473,7 @@ class ApplicationRow(QWidget):
 
         self.name_label = QLabel(self.display_name)
         self.name_label.setToolTip(
-            f"{self.app_name} — this audio session is routed to {bus}"
+            f"{self.display_name} — routed to {bus}"
         )
 
         self.icon_label = QLabel()
@@ -2571,7 +2517,7 @@ class ApplicationRow(QWidget):
             "border-radius: 6px; font-size: 14px; padding: 1px; }"
             "QPushButton:checked { background: #54262c; border-color: #a8434f; }"
         )
-        self.mute_button.setToolTip("Mute this application session")
+        self.mute_button.setToolTip("Mute this application")
         self.mute_button.clicked.connect(self.on_mute_clicked)
 
         heading = QHBoxLayout()
@@ -2789,7 +2735,7 @@ class ApplicationControl(QWidget):
 
     def request_refresh(self):
         if not self._closing and self.worker_thread is not None:
-            self.status_label.setText("Scanning VoiceMeeter audio sessions...")
+            self.status_label.setText("Scanning VoiceMeeter applications...")
             self.refresh_requested.emit()
 
     def on_worker_error(self, message):
@@ -2828,7 +2774,7 @@ class ApplicationControl(QWidget):
         }
         total = sum(counts.values())
         self.status_label.setText(
-            f"{total} audio sessions routed through VoiceMeeter"
+            f"{total} applications routed through VoiceMeeter"
             f" • Game {counts['Game']}"
             f" • Chat {counts['Chat']}"
             f" • Media {counts['Media']}"
