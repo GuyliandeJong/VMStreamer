@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 
     QMainWindow,
 
+    QMenu,
     QPushButton,
 
     QProgressBar,
@@ -2236,6 +2237,7 @@ class ApplicationAudioWorker(QObject):
                                 "display_name": display_name,
                                 "bus": bus,
                                 "executable_path": executable_path,
+                                "hide_key": (executable_path or app_name).strip().casefold(),
                                 "sessions": [],
                                 "volume": state["volume"],
                                 "muted": state["muted"],
@@ -2272,6 +2274,7 @@ class ApplicationAudioWorker(QObject):
                     "display_name": info["display_name"],
                     "bus": info["bus"],
                     "executable_path": info["executable_path"],
+                    "hide_key": info["hide_key"],
                     "volume": info["volume"],
                     "muted": info["muted"],
                     "session_count": len(info["sessions"]),
@@ -2442,11 +2445,13 @@ class ApplicationAudioWorker(QObject):
 
 
 class ApplicationRow(QWidget):
-    """One automatically detected Windows application audio session."""
+    """One automatically detected Windows application group."""
+
+    hide_requested = Signal(str, bool)
 
     def __init__(
         self, session_key, app_name, display_name, bus, controller,
-        executable_path="", volume=1.0, muted=False,
+        executable_path="", volume=1.0, muted=False, hide_key="", hidden=False,
     ):
         super().__init__()
         self.session_key = session_key
@@ -2457,6 +2462,8 @@ class ApplicationRow(QWidget):
         )
         self.bus = bus
         self.controller = controller
+        self.hide_key = hide_key or self.app_name.casefold()
+        self.is_hidden = bool(hidden)
         self._syncing = False
         self._display_peak = 0.0
         self._peak_hold_until = 0.0
@@ -2539,6 +2546,18 @@ class ApplicationRow(QWidget):
         layout.addLayout(volume_row)
 
         self.apply_state({"volume": volume, "muted": muted})
+
+    def contextMenuEvent(self, event):
+        menu = QMenu(self)
+        action = (
+            menu.addAction("Show application")
+            if self.is_hidden
+            else menu.addAction("Hide application")
+        )
+
+        chosen = menu.exec(event.globalPos())
+        if chosen is action:
+            self.hide_requested.emit(self.hide_key, not self.is_hidden)
 
     def on_volume_changed(self, value):
         self.volume_percent.setText(f"{value}%")
@@ -2629,6 +2648,9 @@ class ApplicationControl(QWidget):
         self.rows = {name: {} for name in self.BUS_NAMES}
         self._topology_signature = None
         self._closing = False
+        self.show_hidden = False
+        self.settings = QSettings("VMStreamer", "VMStreamer")
+        self.hidden_applications = self._load_hidden_applications()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5, 4, 5, 5)
@@ -2649,7 +2671,20 @@ class ApplicationControl(QWidget):
         self.status_label.setStyleSheet("color: #8b949e;")
         refresh_button = QPushButton("REFRESH")
         refresh_button.clicked.connect(self.request_refresh)
+
+        self.hidden_button = QPushButton("👁")
+        self.hidden_button.setCheckable(True)
+        self.hidden_button.setFixedSize(32, 28)
+        self.hidden_button.setToolTip("Show hidden applications")
+        self.hidden_button.clicked.connect(self.toggle_hidden_visibility)
+        self.hidden_button.setStyleSheet(
+            "QPushButton { background: #18232e; border: 1px solid #314558; "
+            "border-radius: 6px; font-size: 15px; padding: 0; }"
+            "QPushButton:checked { background: #243b52; border-color: #58a6ff; }"
+        )
+
         toolbar.addWidget(self.status_label, 1)
+        toolbar.addWidget(self.hidden_button)
         toolbar.addWidget(refresh_button)
         layout.addLayout(toolbar)
 
@@ -2733,6 +2768,87 @@ class ApplicationControl(QWidget):
                     return bus
         return None
 
+    def _load_hidden_applications(self):
+        raw = self.settings.value("hidden_applications", "")
+        if isinstance(raw, str):
+            try:
+                values = json.loads(raw) if raw else []
+            except Exception:
+                values = []
+        elif isinstance(raw, (list, tuple, set)):
+            values = list(raw)
+        else:
+            values = []
+
+        return {
+            str(value).casefold()
+            for value in values
+            if str(value).strip()
+        }
+
+    def _save_hidden_applications(self):
+        self.settings.setValue(
+            "hidden_applications",
+            json.dumps(sorted(self.hidden_applications)),
+        )
+        self.settings.sync()
+
+    def toggle_hidden_visibility(self, checked):
+        self.show_hidden = bool(checked)
+        self.hidden_button.setToolTip(
+            "Hide hidden applications"
+            if self.show_hidden
+            else "Show hidden applications"
+        )
+        self.rebuild_rows()
+        self.update_status()
+
+    def on_hide_requested(self, hide_key, hidden):
+        hide_key = str(hide_key or "").casefold()
+        if not hide_key:
+            return
+
+        if hidden:
+            self.hidden_applications.add(hide_key)
+        else:
+            self.hidden_applications.discard(hide_key)
+
+        self._save_hidden_applications()
+        self.rebuild_rows()
+        self.update_status()
+
+    def update_status(self):
+        visible = [
+            info
+            for info in self.sessions.values()
+            if (
+                self.show_hidden
+                or info.get("hide_key", "") not in self.hidden_applications
+            )
+        ]
+
+        counts = {
+            bus: sum(1 for info in visible if info["bus"] == bus)
+            for bus in self.BUS_NAMES
+        }
+
+        hidden_count = sum(
+            1
+            for info in self.sessions.values()
+            if info.get("hide_key", "") in self.hidden_applications
+        )
+
+        total = len(visible)
+        suffix = f" • {hidden_count} hidden" if hidden_count else ""
+
+        self.status_label.setText(
+            f"{total} applications routed through VoiceMeeter"
+            f" • Game {counts['Game']}"
+            f" • Chat {counts['Chat']}"
+            f" • Media {counts['Media']}"
+            f"{suffix}"
+        )
+
     def request_refresh(self):
         if not self._closing and self.worker_thread is not None:
             self.status_label.setText("Scanning VoiceMeeter applications...")
@@ -2765,20 +2881,7 @@ class ApplicationControl(QWidget):
         else:
             self.sync_rows()
 
-        counts = {
-            bus: sum(
-                1 for info in self.sessions.values()
-                if info["bus"] == bus
-            )
-            for bus in self.BUS_NAMES
-        }
-        total = sum(counts.values())
-        self.status_label.setText(
-            f"{total} applications routed through VoiceMeeter"
-            f" • Game {counts['Game']}"
-            f" • Chat {counts['Chat']}"
-            f" • Media {counts['Media']}"
-        )
+        self.update_status()
 
     def on_peaks_updated(self, peaks):
         if self._closing or not self.isVisible():
@@ -2813,6 +2916,12 @@ class ApplicationControl(QWidget):
                 repr(item[0]),
             ),
         ):
+            hide_key = info.get("hide_key", "")
+            hidden = hide_key in self.hidden_applications
+
+            if hidden and not self.show_hidden:
+                continue
+
             row = ApplicationRow(
                 session_key,
                 info["app_name"],
@@ -2822,7 +2931,19 @@ class ApplicationControl(QWidget):
                 info.get("executable_path", ""),
                 info.get("volume", 1.0),
                 info.get("muted", False),
+                hide_key,
+                hidden,
             )
+            row.hide_requested.connect(self.on_hide_requested)
+
+            if hidden:
+                row.name_label.setStyleSheet(
+                    "color: #8b949e; font-style: italic;"
+                )
+                row.name_label.setToolTip(
+                    f"{row.display_name} — hidden application — routed to {row.bus}"
+                )
+
             bus = info["bus"]
             self.bus_layouts[bus].insertWidget(
                 self.bus_layouts[bus].count() - 1,
