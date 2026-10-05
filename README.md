@@ -274,7 +274,6 @@ VMStreamer is actively developed. The following features are planned or being co
 
 If you find VMStreamer useful and would like to support its development, you can leave a tip on [Ko-fi](https://ko-fi.com/guyliandejong).
 
-## License
 
 ## License
 
