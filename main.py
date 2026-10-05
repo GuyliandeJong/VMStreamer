@@ -2663,9 +2663,9 @@ class ApplicationRow(QWidget):
     def contextMenuEvent(self, event):
         menu = QMenu(self)
         action = (
-            menu.addAction("Show application")
+            menu.addAction("Unhide")
             if self.is_hidden
-            else menu.addAction("Hide application")
+            else menu.addAction("Hide")
         )
 
         chosen = menu.exec(event.globalPos())

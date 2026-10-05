@@ -271,11 +271,10 @@ VMStreamer is actively developed. The following features are planned or being co
 
 ## License
 
-VMStreamer is licensed under the [MIT License](LICENSE).
+VMStreamer is licensed under the VMStreamer Non-Commercial License.
+
+You are free to use, modify, fork, and redistribute VMStreamer for personal and non-commercial purposes.
+
+Commercial use, sale, or redistribution of VMStreamer or modified versions for commercial purposes requires prior written permission from the author.
 
 VMStreamer is an independent third-party project and is not affiliated with or endorsed by VB-Audio Software.
-
----
-
-**VMStreamer**  
-A simple control surface for VoiceMeeter Potato.
