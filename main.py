@@ -4066,7 +4066,13 @@ class MainWindow(QMainWindow):
 
 
 
+def resource_path(filename):
+    if getattr(sys, "frozen", False):
+        base_path = sys._MEIPASS
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
 
+    return os.path.join(base_path, filename)
 
 def main():
 
@@ -4080,16 +4086,11 @@ def main():
 
     # Use the bundled VMStreamer icon for the application and all windows.
     # This works both from the source tree and from a PyInstaller build.
-    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-        icon_path = Path(sys._MEIPASS) / "vmstreamer.ico"
-    else:
-        icon_path = Path(__file__).resolve().parent / "vmstreamer.ico"
+    icon_path = resource_path("vmstreamer.ico")
+    app_icon = QIcon(icon_path)
 
-    if icon_path.exists():
-        app_icon = QIcon(str(icon_path))
+    if not app_icon.isNull():
         app.setWindowIcon(app_icon)
-    else:
-        app_icon = QIcon()
 
     # Some Windows Qt styles expose an inherited font with pointSize() == -1
     # (pixel-sized/default font). Give the app a valid point-sized base font.
