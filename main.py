@@ -201,6 +201,9 @@ STRIPS = {
 
 }
 
+# Hide/unhide scope meaning "every virtual channel".
+ALL_CHANNELS = "*"
+
 # Mixer layout dimensions — adjust these when fine-tuning the UI.
 MIXER_CARD_HEIGHT = 655
 CHANNEL_HEADER_HEIGHT = 58
@@ -2560,7 +2563,7 @@ class ApplicationAudioWorker(QObject):
 class ApplicationRow(QWidget):
     """One automatically detected Windows application group."""
 
-    hide_requested = Signal(str, bool)
+    hide_requested = Signal(str, str, bool)
 
     def __init__(
         self, session_key, app_name, display_name, bus, controller,
@@ -2662,15 +2665,20 @@ class ApplicationRow(QWidget):
 
     def contextMenuEvent(self, event):
         menu = QMenu(self)
-        action = (
-            menu.addAction("Unhide")
-            if self.is_hidden
-            else menu.addAction("Hide")
-        )
+        if self.is_hidden:
+            this_action = menu.addAction(f"Unhide on {self.bus}")
+            all_action = menu.addAction("Unhide on all channels")
+            hide = False
+        else:
+            this_action = menu.addAction(f"Hide on {self.bus}")
+            all_action = menu.addAction("Hide on all channels")
+            hide = True
 
         chosen = menu.exec(event.globalPos())
-        if chosen is action:
-            self.hide_requested.emit(self.hide_key, not self.is_hidden)
+        if chosen is this_action:
+            self.hide_requested.emit(self.hide_key, self.bus, hide)
+        elif chosen is all_action:
+            self.hide_requested.emit(self.hide_key, ALL_CHANNELS, hide)
 
     def on_volume_changed(self, value):
         self.volume_percent.setText(f"{value}%")
@@ -2761,9 +2769,15 @@ class ApplicationControl(QWidget):
         self.rows = {name: {} for name in self.BUS_NAMES}
         self._topology_signature = None
         self._closing = False
-        self.show_hidden = False
+        # Hiding is per virtual channel: the same application can be hidden
+        # on Game but still visible on Chat. "Show hidden" is per channel too.
+        self.show_hidden = {bus: False for bus in self.BUS_NAMES}
+        self.bus_hidden_buttons = {}
         self.settings = QSettings("VMStreamer", "VMStreamer")
         self.hidden_applications = self._load_hidden_applications()
+        if self.settings.value("hidden_applications_v2", None) is None:
+            # First launch of the per-channel format: store the migrated list.
+            self._save_hidden_applications()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(5, 4, 5, 5)
@@ -2832,7 +2846,29 @@ class ApplicationControl(QWidget):
                 f"border: 1px solid {colors['border']}; border-radius: 5px; "
                 "padding: 3px 5px; font-weight: bold;"
             )
-            box_layout.addWidget(title)
+            header_row = QHBoxLayout()
+            header_row.setContentsMargins(0, 0, 0, 0)
+            header_row.setSpacing(3)
+            header_row.addWidget(title, 1)
+
+            bus_eye = QPushButton()
+            bus_eye.setCheckable(True)
+            bus_eye.setFixedSize(30, 26)
+            bus_eye.setIcon(reference_eye_icon(18))
+            bus_eye.setIconSize(QSize(18, 18))
+            bus_eye.setToolTip(f"Show hidden applications on {bus}")
+            bus_eye.setStyleSheet(
+                "QPushButton { background: #18232e; border: 1px solid #314558; "
+                "border-radius: 6px; padding: 0; }"
+                "QPushButton:checked { background: #243b52; border-color: #58a6ff; }"
+            )
+            bus_eye.clicked.connect(
+                lambda checked, b=bus: self.set_show_hidden(b, checked)
+            )
+            header_row.addWidget(bus_eye)
+            self.bus_hidden_buttons[bus] = bus_eye
+
+            box_layout.addLayout(header_row)
 
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
@@ -2883,8 +2919,8 @@ class ApplicationControl(QWidget):
                     return bus
         return None
 
-    def _load_hidden_applications(self):
-        raw = self.settings.value("hidden_applications", "")
+    @staticmethod
+    def _parse_hidden_setting(raw):
         if isinstance(raw, str):
             try:
                 values = json.loads(raw) if raw else []
@@ -2901,32 +2937,88 @@ class ApplicationControl(QWidget):
             if str(value).strip()
         }
 
+    @staticmethod
+    def _hide_id(bus, hide_key):
+        """Identifier for one application on one virtual channel."""
+        return f"{bus}|{(hide_key or '').strip()}".casefold()
+
+    def _is_hidden(self, info):
+        base = info.get("hide_key", "") or info.get("app_name", "")
+        return self._hide_id(info["bus"], base) in self.hidden_applications
+
+    def _load_hidden_applications(self):
+        raw = self.settings.value("hidden_applications_v2", None)
+        if raw is not None:
+            return self._parse_hidden_setting(raw)
+
+        # Migrate the older global list. Previously a hidden application was
+        # hidden on every channel, so keep exactly that behaviour once.
+        legacy = self._parse_hidden_setting(
+            self.settings.value("hidden_applications", "")
+        )
+        return {
+            self._hide_id(bus, key)
+            for key in legacy
+            for bus in self.BUS_NAMES
+        }
+
     def _save_hidden_applications(self):
         self.settings.setValue(
-            "hidden_applications",
+            "hidden_applications_v2",
             json.dumps(sorted(self.hidden_applications)),
         )
         self.settings.sync()
 
     def toggle_hidden_visibility(self, checked):
-        self.show_hidden = bool(checked)
-        self.hidden_button.setToolTip(
-            "Hide hidden applications"
-            if self.show_hidden
-            else "Show hidden applications"
-        )
+        """Master eye button: show or hide hidden applications everywhere."""
+        self.set_show_hidden(None, checked)
+
+    def set_show_hidden(self, bus, checked):
+        """Show hidden applications on one channel (or all when bus is None)."""
+        buses = self.BUS_NAMES if bus is None else (bus,)
+        for name in buses:
+            self.show_hidden[name] = bool(checked)
+        self._sync_hidden_buttons()
         self.rebuild_rows()
         self.update_status()
 
-    def on_hide_requested(self, hide_key, hidden):
-        hide_key = str(hide_key or "").casefold()
+    def _sync_hidden_buttons(self):
+        for name, button in self.bus_hidden_buttons.items():
+            shown = self.show_hidden[name]
+            button.setChecked(shown)
+            button.setToolTip(
+                f"Hide hidden applications on {name}"
+                if shown
+                else f"Show hidden applications on {name}"
+            )
+
+        all_shown = all(self.show_hidden.values())
+        self.hidden_button.setChecked(all_shown)
+        self.hidden_button.setToolTip(
+            "Hide hidden applications on all channels"
+            if all_shown
+            else "Show hidden applications on all channels"
+        )
+
+    def on_hide_requested(self, hide_key, scope, hidden):
+        """Hide or unhide an application on one channel or on all channels.
+
+        "All channels" covers every channel, including ones the application
+        is not routed to right now, so it stays hidden if its routing changes.
+        """
+        hide_key = str(hide_key or "").strip()
         if not hide_key:
             return
 
-        if hidden:
-            self.hidden_applications.add(hide_key)
-        else:
-            self.hidden_applications.discard(hide_key)
+        buses = self.BUS_NAMES if scope == ALL_CHANNELS else (scope,)
+        for bus in buses:
+            if bus not in self.BUS_NAMES:
+                continue
+            hide_id = self._hide_id(bus, hide_key)
+            if hidden:
+                self.hidden_applications.add(hide_id)
+            else:
+                self.hidden_applications.discard(hide_id)
 
         self._save_hidden_applications()
         self.rebuild_rows()
@@ -2937,8 +3029,8 @@ class ApplicationControl(QWidget):
             info
             for info in self.sessions.values()
             if (
-                self.show_hidden
-                or info.get("hide_key", "") not in self.hidden_applications
+                self.show_hidden[info["bus"]]
+                or not self._is_hidden(info)
             )
         ]
 
@@ -2950,7 +3042,7 @@ class ApplicationControl(QWidget):
         hidden_count = sum(
             1
             for info in self.sessions.values()
-            if info.get("hide_key", "") in self.hidden_applications
+            if self._is_hidden(info)
         )
 
         total = len(visible)
@@ -3031,10 +3123,12 @@ class ApplicationControl(QWidget):
                 repr(item[0]),
             ),
         ):
-            hide_key = info.get("hide_key", "")
-            hidden = hide_key in self.hidden_applications
+            hide_key = info.get("hide_key", "") or info["app_name"]
+            hidden = (
+                self._hide_id(info["bus"], hide_key) in self.hidden_applications
+            )
 
-            if hidden and not self.show_hidden:
+            if hidden and not self.show_hidden[info["bus"]]:
                 continue
 
             row = ApplicationRow(
