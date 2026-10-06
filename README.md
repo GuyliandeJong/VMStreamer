@@ -44,8 +44,8 @@ Each application provides:
 
 ### Hiding Applications
 
-- **Hide applications:** Right-click any application and select **Hide application**. Hidden applications are removed from the normal application view and remembered between launches.
-- **Unhide applications:** Click the **eye button** next to Refresh to show hidden applications, then right-click the application and select **Show application**.
+- **Hide applications:** Right-click any application and select **Hide**. Hidden applications are removed from the normal application view and remembered between launches.
+- **Unhide applications:** Click the **eye button** next to Refresh to show hidden applications, then right-click the application and select **UnHide**.
 
 ### Microphone Processing
 
