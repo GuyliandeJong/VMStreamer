@@ -42,6 +42,10 @@ Each application provides:
 - Automatic session detection
 - Search and refresh functionality
 
+### Hiding Applications
+
+To hide an application, **right-click the application and select `Hide application`**. Hidden applications are removed from the normal application view and remembered between launches. Click the **eye button** next to Refresh to show hidden applications again.
+
 ### Microphone Processing
 
 VMStreamer provides direct control over VoiceMeeter's microphone processing.
