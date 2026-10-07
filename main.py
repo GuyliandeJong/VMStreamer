@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 
-from PySide6.QtCore import (Qt, Signal, QObject, QTimer, QRectF, QFileInfo, QThread, QSettings, Slot, QMetaObject, QtMsgType, QByteArray, QSize, QMimeData, qInstallMessageHandler)
+from PySide6.QtCore import (Qt, Signal, QObject, QTimer, QRectF, QFileInfo, QThread, QSettings, Slot, QMetaObject, QtMsgType, QByteArray, QSize, QMimeData, QPointF, qInstallMessageHandler)
 from PySide6.QtGui import QBrush, QColor, QDrag, QFont, QIcon, QLinearGradient, QPainter, QPen, QPixmap
 
 from PySide6.QtSvg import QSvgRenderer
@@ -43,7 +43,8 @@ from PySide6.QtWidgets import (
     QSlider,
     QStyleOptionSlider,
     QSizePolicy,
-
+    QSplitter,
+    QSplitterHandle,
     QTabWidget,
 
     QToolButton,
@@ -226,15 +227,18 @@ MIC_METER_GAP = 47      # pixels between the meters and the fader
 MIC_METER_SPACING = 6   # pixels between the two meters
 
 # Mixer layout dimensions — adjust these when fine-tuning the UI.
-MIXER_CARD_HEIGHT = 655
+# The mixer and the lower panels share the window height through a
+# draggable splitter, so these are minimums and starting sizes, not fixed sizes.
+MIXER_CARD_MIN_HEIGHT = 340
+DEFAULT_MIXER_PANE_HEIGHT = 655
 CHANNEL_HEADER_HEIGHT = 58
-CHANNEL_FADER_HEIGHT = 455
-MIC_METER_HEIGHT = 455
+CHANNEL_FADER_MIN_HEIGHT = 100
 FADER_TO_GAIN_GAP = 5
 MIXER_BUTTON_HEIGHT = 28
 ROUTING_LABEL_HEIGHT = 14
 ROUTING_BUTTON_HEIGHT = 28
 APPLICATION_PANEL_HEIGHT = 300
+APPLICATION_PANEL_MIN_HEIGHT = 140
 
 STRIP_COLORS = {
     "Mic": {"accent": "#35c8ff", "border": "#24566b", "header": "#102b38"},
@@ -318,8 +322,8 @@ class VUMeter(QProgressBar):
 
         self.setMaximumWidth(28)
 
-        self.setMinimumHeight(230)
-        self.setMaximumHeight(230)
+        # Height is flexible: the Mic meters follow the fader length.
+        self.setMinimumHeight(40)
 
 
 
@@ -1183,16 +1187,16 @@ class MicFaderArea(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(0)
         row.addStretch(1)
-        row.addWidget(fader, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(fader)
         row.addStretch(1)
 
         for meter in self.meters:
             meter.setParent(self)
 
-        self.setFixedHeight(max(CHANNEL_FADER_HEIGHT, MIC_METER_HEIGHT))
+        self.setMinimumHeight(CHANNEL_FADER_MIN_HEIGHT)
         self.setSizePolicy(
             QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Expanding,
         )
 
     def resizeEvent(self, event):
@@ -1210,9 +1214,10 @@ class MicFaderArea(QWidget):
         widths = [meter.maximumWidth() for meter in self.meters]
         total = sum(widths) + MIC_METER_SPACING * (len(widths) - 1)
         x = max(0, self.fader.x() - MIC_METER_GAP - total)
-        y = (self.height() - MIC_METER_HEIGHT) // 2
+        y = self.fader.y()
+        height = self.fader.height()
         for meter, width in zip(self.meters, widths):
-            meter.setGeometry(x, y, width, MIC_METER_HEIGHT)
+            meter.setGeometry(x, y, width, height)
             meter.show()
             x += width + MIC_METER_SPACING
 
@@ -1331,8 +1336,6 @@ class StripWidget(QWidget):
         # Mic signal meters. They are placed relative to the fader (see
         # MicFaderArea) so they can never push the fader off center.
         self.vu_meters = [VUMeter(), VUMeter()] if name == "Mic" else []
-        for meter in self.vu_meters:
-            meter.setFixedHeight(MIC_METER_HEIGHT)
         self.vu_meter = self.vu_meters[0] if self.vu_meters else None
 
         # Fader
@@ -1359,12 +1362,7 @@ class StripWidget(QWidget):
             "Page Up/Down changes 0.10 dB."
         )
 
-        self.fader.setMinimumHeight(
-
-            CHANNEL_FADER_HEIGHT
-
-        )
-        self.fader.setMaximumHeight(CHANNEL_FADER_HEIGHT)
+        self.fader.setMinimumHeight(CHANNEL_FADER_MIN_HEIGHT)
         self.fader.setStyleSheet(
             "QSlider::groove:vertical { background: #30363d; width: 8px; "
             "border-radius: 4px; }"
@@ -1396,18 +1394,14 @@ class StripWidget(QWidget):
         if self.vu_meter is not None:
             # The fader is centered in the card exactly like the other
             # strips; the two input meters sit to its left.
-            layout.addWidget(MicFaderArea(self.fader, self.vu_meters))
+            layout.addWidget(MicFaderArea(self.fader, self.vu_meters), 1)
         else:
             control_layout = QHBoxLayout()
             control_layout.setContentsMargins(0, 0, 0, 0)
             control_layout.addStretch(1)
-            control_layout.addWidget(
-                self.fader,
-                0,
-                Qt.AlignmentFlag.AlignVCenter,
-            )
+            control_layout.addWidget(self.fader)
             control_layout.addStretch(1)
-            layout.addLayout(control_layout)
+            layout.addLayout(control_layout, 1)
 
 
         # Gain readout
@@ -1424,7 +1418,7 @@ class StripWidget(QWidget):
         )
         if self.vu_meter is not None:
             self.gain_label.setStyleSheet(
-                "color: #aebdca; font-size: 12px; margin-top: -10px;"
+                "color: #aebdca; font-size: 12px;"
             )
         else:
             self.gain_label.setStyleSheet(
@@ -2093,6 +2087,11 @@ class ApplicationAudioWorker(QObject):
         self._session_lock = threading.RLock()
         self._com_initialized = False
         self._last_peak_emit = 0.0
+        # Applications just moved to another channel, waiting for Windows to
+        # re-bind their audio: {(exe name, exe path): {target, deadline, name}}
+        self._pending_moves = {}
+        self._fast_timer = None
+        self._fast_scans_left = 0
 
     @staticmethod
     def friendly_name(app_name, display_name=""):
@@ -2271,6 +2270,10 @@ class ApplicationAudioWorker(QObject):
         if info is None or info["bus"] == target_bus:
             return
         name = info["display_name"]
+        app_id = (
+            info["app_name"],
+            (info.get("executable_path") or "").casefold(),
+        )
         if not APP_ROUTING_AVAILABLE:
             self.route_finished.emit(
                 "Moving applications needs the winappaudiorouter package: "
@@ -2299,21 +2302,24 @@ class ApplicationAudioWorker(QObject):
                 return
             moved = 0
             last_error = ""
-            targets = self.__dict__.setdefault("_route_targets", {})
             for pid in pids:
                 try:
                     war.set_app_output_device(
                         process_id=pid,
                         device=device.id,
                     )
-                    targets[pid] = target_bus
                     moved += 1
                 except Exception as exc:
                     last_error = f"{type(exc).__name__}: {exc}"
             if moved:
+                self._pending_moves[app_id] = {
+                    "target": target_bus,
+                    "deadline": time.monotonic() + 300.0,
+                    "name": name,
+                }
                 self.route_finished.emit(
-                    f"Moved {name} to {target_bus}. "
-                    "Some apps only switch after their audio restarts."
+                    f"Moving {name} to {target_bus}. Windows switches it when "
+                    "the app next starts playback; its audio is not interrupted."
                 )
             else:
                 self.route_finished.emit(
@@ -2325,45 +2331,83 @@ class ApplicationAudioWorker(QObject):
                 f"{type(exc).__name__}: {exc}"
             )
         finally:
-            # Re-scan a few times: apps rebind their audio asynchronously, so
-            # the new session may take a moment to appear.
-            for delay in (300, 1200, 3000):
-                QTimer.singleShot(delay, self.refresh_sessions)
+            # Apps re-bind their audio on their own schedule, so keep
+            # scanning for a while and update the moment it happens.
+            self._start_fast_scans()
 
     def _drop_stale_sessions(self, found):
-        """Remove the leftover session an app keeps on its old channel.
+        """Resolve an application that shows on two channels after a move.
 
-        After an application is moved to another channel, Windows can keep the
-        old session on the previous endpoint until the app restarts its audio,
-        so one process would appear on two channels. When a process has
-        sessions on more than one channel, keep the channel it is actually
-        playing on (or the one it was just moved to) and drop the rest.
+        Windows keeps an application's old session on the previous channel
+        until the app next starts playback on the new one, so right after a
+        move the same application can appear twice. A channel entry that is
+        not playing is dropped when the same application is playing on, or
+        was just moved to, another channel. An application that is still
+        playing on its old channel stays visible there (that is where its
+        audio really is) and is marked as moving until Windows switches it.
         """
-        by_pid = {}
+        now = time.monotonic()
+        pending = self._pending_moves
+        for app_id in [k for k, v in pending.items() if v["deadline"] < now]:
+            del pending[app_id]
+
+        by_app = {}
         for group_key, info in found.items():
-            for member in info["sessions"]:
-                pid = member.get("pid") or 0
-                if pid:
-                    by_pid.setdefault(pid, []).append((group_key, info["bus"], member))
+            app_id = (
+                info["app_name"],
+                (info.get("executable_path") or "").casefold(),
+            )
+            by_app.setdefault(app_id, []).append(group_key)
 
-        targets = getattr(self, "_route_targets", {})
-        for pid, entries in by_pid.items():
-            buses = {bus for _, bus, _ in entries}
-            if len(buses) < 2:
+        for app_id, keys in by_app.items():
+            move = pending.get(app_id)
+            target = move["target"] if move else None
+
+            if len(keys) > 1:
+                active = [
+                    k for k in keys
+                    if any(m.get("state") == 1 for m in found[k]["sessions"])
+                ]
+                if len(active) == 1:
+                    keep = set(active)
+                elif not active and any(found[k]["bus"] == target for k in keys):
+                    keep = {k for k in keys if found[k]["bus"] == target}
+                else:
+                    # Playing on several channels, or nothing to go on.
+                    keep = set(keys)
+                for k in keys:
+                    if k not in keep:
+                        del found[k]
+                keys = [k for k in keys if k in keep]
+
+            if move is None:
                 continue
-            active = {bus for _, bus, m in entries if m.get("state") == 1}
-            if len(active) == 1:
-                keep = next(iter(active))
-            elif targets.get(pid) in buses:
-                keep = targets[pid]
+            if {found[k]["bus"] for k in keys} == {target}:
+                self.route_finished.emit(f"{move['name']} is now on {target}.")
+                del pending[app_id]
             else:
-                continue  # genuinely playing on several channels: keep all
-            for group_key, bus, member in entries:
-                if bus != keep:
-                    found[group_key]["sessions"].remove(member)
+                for k in keys:
+                    if found[k]["bus"] != target:
+                        found[k]["moving_to"] = target
 
-        for group_key in [k for k, i in found.items() if not i["sessions"]]:
-            del found[group_key]
+    def _start_fast_scans(self, count=90, interval_ms=1000):
+        """Scan every second for a while after a move, then go back to normal.
+
+        Scanning only reads the Windows session list; it never touches audio.
+        """
+        self._fast_scans_left = count
+        if self._fast_timer is None:
+            self._fast_timer = QTimer(self)
+            self._fast_timer.timeout.connect(self._fast_scan)
+        self._fast_timer.setInterval(interval_ms)
+        self._fast_timer.start()
+        QTimer.singleShot(300, self.refresh_sessions)
+
+    def _fast_scan(self):
+        self._fast_scans_left -= 1
+        if self._fast_scans_left <= 0 or not self._pending_moves:
+            self._fast_timer.stop()
+        self.refresh_sessions()
 
     @staticmethod
     def _read_state(session):
@@ -2518,6 +2562,7 @@ class ApplicationAudioWorker(QObject):
                     "bus": info["bus"],
                     "executable_path": info["executable_path"],
                     "hide_key": info["hide_key"],
+                    "moving_to": info.get("moving_to", ""),
                     "volume": info["volume"],
                     "muted": info["muted"],
                     "session_count": len(info["sessions"]),
@@ -2666,6 +2711,8 @@ class ApplicationAudioWorker(QObject):
             self.refresh_timer.stop()
         if self.state_timer is not None:
             self.state_timer.stop()
+        if self._fast_timer is not None:
+            self._fast_timer.stop()
 
         self._peak_stop.set()
         peak_thread = self._peak_thread
@@ -2829,6 +2876,15 @@ class ApplicationRow(QWidget):
             drag.exec(Qt.DropAction.MoveAction)
         finally:
             self.controller.drag_finished()
+
+    def set_moving(self, target):
+        """Mark this row as waiting for Windows to move it to another channel."""
+        self.name_label.setStyleSheet("color: #d29922; font-style: italic;")
+        self.name_label.setToolTip(
+            f"{self.display_name} — moving to {target}. Windows switches it "
+            "when the app next starts playback; pausing and resuming it "
+            "speeds this up. Its audio is not interrupted."
+        )
 
     def contextMenuEvent(self, event):
         menu = QMenu(self)
@@ -3344,7 +3400,7 @@ class ApplicationControl(QWidget):
 
         signature = tuple(
             sorted(
-                (key, info["bus"])
+                (key, info["bus"], info.get("moving_to") or "")
                 for key, info in self.sessions.items()
             )
         )
@@ -3425,6 +3481,8 @@ class ApplicationControl(QWidget):
                     f"{row.display_name} — hidden application — routed to {row.bus} • drag to move"
                 )
 
+            if info.get("moving_to"):
+                row.set_moving(info["moving_to"])
             bus = info["bus"]
             self.bus_layouts[bus].insertWidget(
                 self.bus_layouts[bus].count() - 1,
@@ -3550,6 +3608,73 @@ class MicLevelWorker(QObject):
             self.timer.stop()
             self.timer = None
         self.finished.emit()
+
+
+class GripSplitterHandle(QSplitterHandle):
+    """Splitter handle with a visible grip, so it is obviously draggable."""
+
+    def __init__(self, orientation, parent):
+        super().__init__(orientation, parent)
+        self._hover = False
+        self._pressed = False
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self.setToolTip("Drag to resize • double-click to reset")
+
+    def enterEvent(self, event):
+        self._hover = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover = False
+        self.update()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        self._pressed = True
+        self.update()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._pressed = False
+        self.update()
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        splitter = self.splitter()
+        if hasattr(splitter, "reset_sizes"):
+            splitter.reset_sizes()
+        super().mouseDoubleClickEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        bar = QRectF(self.rect()).adjusted(0, 3, 0, -3)
+        active = self._hover or self._pressed
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#243b52" if active else "#18232e"))
+        painter.drawRoundedRect(bar, 3, 3)
+        painter.setBrush(QColor("#58a6ff" if active else "#4b6179"))
+        center = bar.center()
+        for offset in (-14, 0, 14):
+            painter.drawEllipse(QPointF(center.x() + offset, center.y()), 2.0, 2.0)
+
+
+class GripSplitter(QSplitter):
+    """Splitter that uses the grip handle and can return to default sizes."""
+
+    def __init__(self, orientation, default_sizes, parent=None):
+        super().__init__(orientation, parent)
+        self._default_sizes = list(default_sizes)
+        self.setHandleWidth(14)
+        self.setChildrenCollapsible(False)
+        self.setOpaqueResize(True)
+
+    def createHandle(self):
+        return GripSplitterHandle(self.orientation(), self)
+
+    def reset_sizes(self):
+        self.setSizes(self._default_sizes)
 
 
 class MainWindow(QMainWindow):
@@ -3793,7 +3918,6 @@ class MainWindow(QMainWindow):
         )
         main_layout.setContentsMargins(9, 9, 9, 9)
         main_layout.setSpacing(4)
-        main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
 
 
@@ -3863,10 +3987,19 @@ class MainWindow(QMainWindow):
 
         # Mixer
 
-        self.mixer_layout = QHBoxLayout()
-
+        # The mixer (top) and the Applications / Mic Processing panels
+        # (bottom) share the window height through a draggable splitter, so
+        # resizing the window never leaves an empty gap between them.
+        self.main_splitter = GripSplitter(
+            Qt.Orientation.Vertical,
+            (DEFAULT_MIXER_PANE_HEIGHT, APPLICATION_PANEL_HEIGHT + 40),
+        )
+        self.mixer_container = QWidget()
+        self.mixer_layout = QHBoxLayout(self.mixer_container)
+        self.mixer_layout.setContentsMargins(0, 0, 0, 0)
         self.mixer_layout.setSpacing(4)
-        main_layout.addLayout(self.mixer_layout, 0)
+        self.main_splitter.addWidget(self.mixer_container)
+        main_layout.addWidget(self.main_splitter, 1)
 
 
 
@@ -3902,7 +4035,9 @@ class MainWindow(QMainWindow):
 
         # Lower panels align with the mixer: mic processing beneath Mic,
         # application sessions beneath the three virtual input strips.
-        lower_layout = QHBoxLayout()
+        self.lower_container = QWidget()
+        lower_layout = QHBoxLayout(self.lower_container)
+        lower_layout.setContentsMargins(0, 0, 0, 0)
         lower_layout.setSpacing(4)
 
         self.processing_panel = QWidget()
@@ -3955,16 +4090,21 @@ class MainWindow(QMainWindow):
             1,
             Qt.AlignmentFlag.AlignTop,
         )
-        lower_layout.addWidget(
-            self.applications_panel,
-            3,
-            Qt.AlignmentFlag.AlignTop,
-        )
-        # Keep the lower Applications / Mic Processing section anchored to
-        # the bottom of the available window instead of leaving empty space
-        # underneath it.
-        main_layout.addStretch(1)
-        main_layout.addLayout(lower_layout, 0)
+        lower_layout.addWidget(self.applications_panel, 3)
+        self.main_splitter.addWidget(self.lower_container)
+        # Extra window height goes to the mixer; the lower panels keep the
+        # size the user dragged them to.
+        self.main_splitter.setStretchFactor(0, 1)
+        self.main_splitter.setStretchFactor(1, 0)
+        restored = False
+        saved_split = self.window_settings.value("splitter_v1")
+        if saved_split is not None:
+            try:
+                restored = bool(self.main_splitter.restoreState(saved_split))
+            except Exception:
+                restored = False
+        if not restored:
+            self.main_splitter.reset_sizes()
 
         # Connect to VoiceMeeter
         self.connect_vm()
@@ -4115,7 +4255,11 @@ class MainWindow(QMainWindow):
 
 
 
-            widget.setFixedHeight(MIXER_CARD_HEIGHT)
+            widget.setMinimumHeight(MIXER_CARD_MIN_HEIGHT)
+            widget.setSizePolicy(
+                QSizePolicy.Policy.Preferred,
+                QSizePolicy.Policy.Expanding,
+            )
             self.mixer_layout.addWidget(
 
                 widget
@@ -4218,14 +4362,10 @@ class MainWindow(QMainWindow):
         self.application_control = ApplicationControl()
         self.application_control.setSizePolicy(
             QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Expanding,
         )
-        self.application_control.setFixedHeight(APPLICATION_PANEL_HEIGHT)
-        self.applications_panel_layout.addWidget(
-            self.application_control,
-            0,
-            Qt.AlignmentFlag.AlignTop,
-        )
+        self.application_control.setMinimumHeight(APPLICATION_PANEL_MIN_HEIGHT)
+        self.applications_panel_layout.addWidget(self.application_control, 1)
         self.application_control.setVisible(True)
 
     def start_mic_level_worker(self):
@@ -4422,6 +4562,7 @@ class MainWindow(QMainWindow):
 
 
         self.window_settings.setValue("geometry_v2", self.saveGeometry())
+        self.window_settings.setValue("splitter_v1", self.main_splitter.saveState())
         self.window_settings.sync()
 
         event.accept()
