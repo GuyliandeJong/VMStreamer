@@ -9,8 +9,8 @@ from pathlib import Path
 
 
 
-from PySide6.QtCore import (Qt, Signal, QObject, QTimer, QRectF, QFileInfo, QThread, QSettings, Slot, QMetaObject, QtMsgType, QByteArray, QSize, qInstallMessageHandler)
-from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QLinearGradient, QPainter, QPen, QPixmap
+from PySide6.QtCore import (Qt, Signal, QObject, QTimer, QRectF, QFileInfo, QThread, QSettings, Slot, QMetaObject, QtMsgType, QByteArray, QSize, QMimeData, qInstallMessageHandler)
+from PySide6.QtGui import QBrush, QColor, QDrag, QFont, QIcon, QLinearGradient, QPainter, QPen, QPixmap
 
 from PySide6.QtSvg import QSvgRenderer
 
@@ -65,6 +65,16 @@ try:
 except ImportError:
     AudioUtilities = None
     PYCAW_AVAILABLE = False
+
+# Optional: moving an application between virtual channels (drag and drop)
+# uses Windows' per-app output device setting through this small package.
+# VMStreamer runs without it; dropping an application then shows a hint.
+try:
+    import winappaudiorouter as war
+    APP_ROUTING_AVAILABLE = True
+except Exception:
+    war = None
+    APP_ROUTING_AVAILABLE = False
 
 
 
@@ -207,6 +217,13 @@ MIC_STRIP = STRIPS["Mic"]
 
 # Hide/unhide scope meaning "every virtual channel".
 ALL_CHANNELS = "*"
+
+# Drag and drop of an application between channel columns.
+DRAG_MIME = "application/x-vmstreamer-application"
+
+# Mic strip: meters sit to the left of the (centered) fader.
+MIC_METER_GAP = 47      # pixels between the meters and the fader
+MIC_METER_SPACING = 6   # pixels between the two meters
 
 # Mixer layout dimensions — adjust these when fine-tuning the UI.
 MIXER_CARD_HEIGHT = 655
@@ -1148,6 +1165,58 @@ class FineControlSlider(QSlider):
         event.accept()
 
 
+class MicFaderArea(QWidget):
+    """Mic fader and meters.
+
+    The fader is centered with the same stretch layout the other strips use,
+    so it lines up exactly with the gain readout and the other faders. The two
+    input meters are positioned relative to the fader instead of being part of
+    the layout, so they can never push the fader off center.
+    """
+
+    def __init__(self, fader, meters):
+        super().__init__()
+        self.fader = fader
+        self.meters = list(meters)
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        row.addStretch(1)
+        row.addWidget(fader, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addStretch(1)
+
+        for meter in self.meters:
+            meter.setParent(self)
+
+        self.setFixedHeight(max(CHANNEL_FADER_HEIGHT, MIC_METER_HEIGHT))
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._place_meters()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._place_meters()
+
+    def _place_meters(self):
+        if not self.meters:
+            return
+        self.layout().activate()
+        widths = [meter.maximumWidth() for meter in self.meters]
+        total = sum(widths) + MIC_METER_SPACING * (len(widths) - 1)
+        x = max(0, self.fader.x() - MIC_METER_GAP - total)
+        y = (self.height() - MIC_METER_HEIGHT) // 2
+        for meter, width in zip(self.meters, widths):
+            meter.setGeometry(x, y, width, MIC_METER_HEIGHT)
+            meter.show()
+            x += width + MIC_METER_SPACING
+
+
 class StripWidget(QWidget):
 
     def __init__(
@@ -1259,25 +1328,12 @@ class StripWidget(QWidget):
 
 
 
-        # Mic signal meter. The dB readout remains below the fader as gain.
-
-        meter_layout = QHBoxLayout()
-
-
-
+        # Mic signal meters. They are placed relative to the fader (see
+        # MicFaderArea) so they can never push the fader off center.
         self.vu_meters = [VUMeter(), VUMeter()] if name == "Mic" else []
-        if self.vu_meters:
-            for meter in self.vu_meters:
-                meter.setFixedHeight(MIC_METER_HEIGHT)
+        for meter in self.vu_meters:
+            meter.setFixedHeight(MIC_METER_HEIGHT)
         self.vu_meter = self.vu_meters[0] if self.vu_meters else None
-
-
-
-        if self.vu_meter is not None:
-            for meter in self.vu_meters:
-                meter_layout.addWidget(meter)
-
-
 
         # Fader
 
@@ -1338,48 +1394,9 @@ class StripWidget(QWidget):
 
 
         if self.vu_meter is not None:
-            # Keep the Mic fader centered in the card so its gain readout
-            # lines up with the other channel gain readouts. The two input
-            # meters remain grouped to the left of the fader.
-            control_layout = QGridLayout()
-            control_layout.setContentsMargins(0, 0, 0, 0)
-            control_layout.setHorizontalSpacing(12)
-            control_layout.setVerticalSpacing(0)
-            control_layout.setColumnStretch(0, 1)
-            control_layout.setColumnStretch(1, 0)
-            control_layout.setColumnStretch(2, 1)
-
-            meter_container = QWidget()
-            meter_container_layout = QHBoxLayout(meter_container)
-            meter_container_layout.setContentsMargins(0, 0, 35, 0)
-            meter_container_layout.setSpacing(meter_layout.spacing())
-            while meter_layout.count():
-                item = meter_layout.takeAt(0)
-                if item.widget() is not None:
-                    meter_container_layout.addWidget(item.widget())
-
-            control_layout.addWidget(
-                meter_container,
-                0,
-                0,
-                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-            )
-            fader_container = QWidget()
-            fader_container_layout = QHBoxLayout(fader_container)
-            fader_container_layout.setContentsMargins(0, 0, 5, 0)
-            fader_container_layout.addWidget(
-                self.fader,
-                0,
-                Qt.AlignmentFlag.AlignCenter,
-            )
-
-            control_layout.addWidget(
-                fader_container,
-                0,
-                1,
-                Qt.AlignmentFlag.AlignCenter,
-            )
-            layout.addLayout(control_layout)
+            # The fader is centered in the card exactly like the other
+            # strips; the two input meters sit to its left.
+            layout.addWidget(MicFaderArea(self.fader, self.vu_meters))
         else:
             control_layout = QHBoxLayout()
             control_layout.setContentsMargins(0, 0, 0, 0)
@@ -1391,7 +1408,6 @@ class StripWidget(QWidget):
             )
             control_layout.addStretch(1)
             layout.addLayout(control_layout)
-
 
 
         # Gain readout
@@ -2036,6 +2052,7 @@ class ApplicationAudioWorker(QObject):
     topology_updated = Signal(object)
     peaks_updated = Signal(object)
     states_updated = Signal(object)
+    route_finished = Signal(str)
     error = Signal(str)
     finished = Signal()
 
@@ -2220,6 +2237,94 @@ class ApplicationAudioWorker(QObject):
         if path:
             return (bus, app_name.casefold(), path)
         return (bus, app_name.casefold())
+
+    @staticmethod
+    def _find_bus_device(bus):
+        """Return the active VoiceMeeter output device for a channel."""
+        for device in war.list_output_devices():
+            if ApplicationAudioWorker.bus_for_device(device.name) == bus:
+                return device
+        return None
+
+    @staticmethod
+    def _session_pid(session):
+        try:
+            pid = int(getattr(session, "ProcessId", 0) or 0)
+            if pid:
+                return pid
+        except Exception:
+            pass
+        try:
+            return int(session.Process.pid)
+        except Exception:
+            return 0
+
+    @Slot(object, str)
+    def route_application(self, session_key, target_bus):
+        """Move an application's audio to another VoiceMeeter input.
+
+        This sets Windows' per-app output device (the same setting as
+        Settings > Sound > Volume mixer), so it persists until changed again.
+        """
+        with self._session_lock:
+            info = self.sessions.get(session_key)
+        if info is None or info["bus"] == target_bus:
+            return
+        name = info["display_name"]
+        if not APP_ROUTING_AVAILABLE:
+            self.route_finished.emit(
+                "Moving applications needs the winappaudiorouter package: "
+                "pip install winappaudiorouter"
+            )
+            return
+        try:
+            device = self._find_bus_device(target_bus)
+            if device is None:
+                self.route_finished.emit(
+                    f"Could not find the {target_bus} VoiceMeeter input device."
+                )
+                return
+            pids = sorted({
+                pid
+                for pid in (
+                    self._session_pid(member["session"])
+                    for member in info.get("sessions", [])
+                )
+                if pid
+            })
+            if not pids:
+                self.route_finished.emit(
+                    f"{name} is no longer running, so it cannot be moved."
+                )
+                return
+            moved = 0
+            last_error = ""
+            for pid in pids:
+                try:
+                    war.set_app_output_device(
+                        process_id=pid,
+                        device=device.id,
+                    )
+                    moved += 1
+                except Exception as exc:
+                    last_error = f"{type(exc).__name__}: {exc}"
+            if moved:
+                self.route_finished.emit(
+                    f"Moved {name} to {target_bus}. "
+                    "Some apps only switch after their audio restarts."
+                )
+            else:
+                self.route_finished.emit(
+                    f"Could not move {name} to {target_bus}: {last_error}"
+                )
+        except Exception as exc:
+            self.route_finished.emit(
+                f"Could not move {name} to {target_bus}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+        finally:
+            # Re-scan shortly so the row jumps to its new column.
+            QTimer.singleShot(700, self.refresh_sessions)
 
     @staticmethod
     def _read_state(session):
@@ -2560,6 +2665,7 @@ class ApplicationRow(QWidget):
         self.controller = controller
         self.hide_key = hide_key or self.app_name.casefold()
         self.is_hidden = bool(hidden)
+        self._drag_start = None
         self._syncing = False
         self._display_peak = 0.0
         self._peak_hold_until = 0.0
@@ -2576,7 +2682,7 @@ class ApplicationRow(QWidget):
 
         self.name_label = QLabel(self.display_name)
         self.name_label.setToolTip(
-            f"{self.display_name} — routed to {bus}"
+            f"{self.display_name} — routed to {bus} • drag to another channel to move it"
         )
 
         self.icon_label = QLabel()
@@ -2642,6 +2748,45 @@ class ApplicationRow(QWidget):
         layout.addLayout(volume_row)
 
         self.apply_state({"volume": volume, "muted": muted})
+
+    # Drag an application onto another channel column to move its audio there.
+    # Only presses on the name/icon area start a drag; the volume slider and
+    # the mute button keep their own mouse handling.
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start = event.position().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if (
+            self._drag_start is not None
+            and event.buttons() & Qt.MouseButton.LeftButton
+            and (event.position().toPoint() - self._drag_start).manhattanLength()
+            >= QApplication.startDragDistance()
+        ):
+            hot_spot = self._drag_start
+            self._drag_start = None
+            self._start_drag(hot_spot)
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_start = None
+        super().mouseReleaseEvent(event)
+
+    def _start_drag(self, hot_spot):
+        payload = json.dumps({"key": list(self.session_key), "bus": self.bus})
+        mime = QMimeData()
+        mime.setData(DRAG_MIME, QByteArray(payload.encode("utf-8")))
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.setPixmap(self.grab())
+        drag.setHotSpot(hot_spot)
+        self.controller.drag_started()
+        try:
+            drag.exec(Qt.DropAction.MoveAction)
+        finally:
+            self.controller.drag_finished()
 
     def contextMenuEvent(self, event):
         menu = QMenu(self)
@@ -2717,6 +2862,70 @@ class ApplicationRow(QWidget):
         )
 
 
+class ApplicationDropColumn(QWidget):
+    """One channel column; accepts applications dragged from another channel."""
+
+    application_dropped = Signal(object, str, str)  # key, source bus, target bus
+
+    def __init__(self, bus, colors):
+        super().__init__()
+        self.bus = bus
+        self.setObjectName("applicationBusCard")
+        self._normal_style = (
+            "QWidget#applicationBusCard {"
+            f"background: #101820; border: 1px solid {colors['border']}; "
+            "border-radius: 8px; }"
+        )
+        self._highlight_style = (
+            "QWidget#applicationBusCard {"
+            f"background: {colors['header']}; border: 1px solid {colors['accent']}; "
+            "border-radius: 8px; }"
+        )
+        self.setStyleSheet(self._normal_style)
+        self.setAcceptDrops(True)
+
+    @staticmethod
+    def _payload(mime):
+        """Return (session_key, source_bus) from a dragged application."""
+        if not mime.hasFormat(DRAG_MIME):
+            return None
+        try:
+            data = json.loads(bytes(mime.data(DRAG_MIME)).decode("utf-8"))
+            return tuple(data["key"]), str(data["bus"])
+        except Exception:
+            return None
+
+    def _accepts(self, event):
+        payload = self._payload(event.mimeData())
+        return payload is not None and payload[1] != self.bus
+
+    def dragEnterEvent(self, event):
+        if self._accepts(event):
+            self.setStyleSheet(self._highlight_style)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if self._accepts(event):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self.setStyleSheet(self._normal_style)
+        event.accept()
+
+    def dropEvent(self, event):
+        self.setStyleSheet(self._normal_style)
+        payload = self._payload(event.mimeData())
+        if payload is None or payload[1] == self.bus:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        self.application_dropped.emit(payload[0], payload[1], self.bus)
+
+
 class ApplicationControl(QWidget):
     """Detect VoiceMeeter application sessions without blocking the Qt thread."""
 
@@ -2740,6 +2949,7 @@ class ApplicationControl(QWidget):
     refresh_requested = Signal()
     volume_requested = Signal(object, str, float)
     mute_requested = Signal(object, str, bool)
+    route_requested = Signal(object, str)
     shutdown_requested = Signal()
 
     def __init__(self):
@@ -2753,6 +2963,9 @@ class ApplicationControl(QWidget):
         # on Game but still visible on Chat. "Show hidden" is per channel too.
         self.show_hidden = {bus: False for bus in self.BUS_NAMES}
         self.bus_hidden_buttons = {}
+        self._drag_active = False
+        self._notice_text = ""
+        self._notice_until = 0.0
         self.settings = QSettings("VMStreamer", "VMStreamer")
         self.hidden_applications = self._load_hidden_applications()
         if self.settings.value("hidden_applications_v2", None) is None:
@@ -2804,13 +3017,8 @@ class ApplicationControl(QWidget):
 
         for bus in self.BUS_NAMES:
             colors = STRIP_COLORS[bus]
-            box = QWidget()
-            box.setObjectName("applicationBusCard")
-            box.setStyleSheet(
-                "QWidget#applicationBusCard {"
-                f"background: #101820; border: 1px solid {colors['border']}; "
-                "border-radius: 8px; }"
-            )
+            box = ApplicationDropColumn(bus, colors)
+            box.application_dropped.connect(self.on_application_dropped)
             box_layout = QVBoxLayout(box)
             box_layout.setContentsMargins(3, 3, 3, 3)
             box_layout.setSpacing(1)
@@ -2879,6 +3087,8 @@ class ApplicationControl(QWidget):
         self.refresh_requested.connect(self.worker.refresh_now)
         self.volume_requested.connect(self.worker.set_volume)
         self.mute_requested.connect(self.worker.set_mute)
+        self.route_requested.connect(self.worker.route_application)
+        self.worker.route_finished.connect(self.on_route_finished)
         self.shutdown_requested.connect(self.worker.shutdown)
 
         self.worker.topology_updated.connect(self.on_topology_updated)
@@ -3005,6 +3215,9 @@ class ApplicationControl(QWidget):
         self.update_status()
 
     def update_status(self):
+        if time.monotonic() < self._notice_until:
+            self.status_label.setText(self._notice_text)
+            return
         visible = [
             info
             for info in self.sessions.values()
@@ -3041,6 +3254,38 @@ class ApplicationControl(QWidget):
             self.status_label.setText("Scanning VoiceMeeter applications...")
             self.refresh_requested.emit()
 
+    def drag_started(self):
+        self._drag_active = True
+
+    def drag_finished(self):
+        self._drag_active = False
+
+    def _show_notice(self, text, seconds=8.0):
+        """Show a short message in the status line, ahead of the counts."""
+        self._notice_text = text
+        self._notice_until = time.monotonic() + seconds
+        self.status_label.setText(text)
+
+    def on_application_dropped(self, session_key, source_bus, target_bus):
+        """An application row was dropped on another channel's column."""
+        if self._closing or self.worker_thread is None:
+            return
+        info = self.sessions.get(session_key)
+        if info is None or info["bus"] != source_bus or source_bus == target_bus:
+            return
+        if not APP_ROUTING_AVAILABLE:
+            self._show_notice(
+                "Moving applications needs the winappaudiorouter package: "
+                "pip install winappaudiorouter"
+            )
+            return
+        self._show_notice(f"Moving {info['display_name']} to {target_bus}...")
+        self.route_requested.emit(session_key, target_bus)
+
+    def on_route_finished(self, message):
+        if not self._closing:
+            self._show_notice(message)
+
     def on_worker_error(self, message):
         if not self._closing:
             self.status_label.setText(message)
@@ -3063,6 +3308,11 @@ class ApplicationControl(QWidget):
         )
 
         if signature != self._topology_signature:
+            if self._drag_active:
+                # Never rebuild rows while one is being dragged; the next
+                # scan applies the change.
+                self.update_status()
+                return
             self._topology_signature = signature
             self.rebuild_rows()
         else:
@@ -3130,7 +3380,7 @@ class ApplicationControl(QWidget):
                     "color: #8b949e; font-style: italic;"
                 )
                 row.name_label.setToolTip(
-                    f"{row.display_name} — hidden application — routed to {row.bus}"
+                    f"{row.display_name} — hidden application — routed to {row.bus} • drag to move"
                 )
 
             bus = info["bus"]
