@@ -74,7 +74,6 @@ except ImportError:
 
 # Monochrome UI icons. They are embedded as SVG so the application does not
 # need extra icon files at runtime or during PyInstaller packaging.
-MONO_ICON_STROKE = "#d7e1eb"
 
 
 def _svg_icon(svg, size=22):
@@ -184,7 +183,9 @@ def mono_icon(name, size=22):
 def _qt_message_handler(mode, context, message):
     if message == "QFont::setPointSize: Point size <= 0 (-1), must be greater than 0":
         return
-    sys.__stderr__.write(f"{message}\n")
+    # In a windowed (no console) PyInstaller build sys.__stderr__ is None.
+    if sys.__stderr__ is not None:
+        sys.__stderr__.write(f"{message}\n")
 
 
 # VoiceMeeter strip indexes
@@ -200,6 +201,9 @@ STRIPS = {
     "Media": 7,
 
 }
+
+# The Mic strip is the only strip with processing controls and a VU meter.
+MIC_STRIP = STRIPS["Mic"]
 
 # Hide/unhide scope meaning "every virtual channel".
 ALL_CHANNELS = "*"
@@ -239,7 +243,6 @@ class VMEventBridge(QObject):
 
 
     event_received = Signal(str)
-    mic_levels_received = Signal(float, float)
 
 
 
@@ -258,42 +261,11 @@ class VMObserver:
 
 
 
-    @staticmethod
-    def _channel_levels(raw_levels):
-        if isinstance(raw_levels, (tuple, list)):
-            levels = [
-                float(value)
-                for value in raw_levels
-                if isinstance(value, (int, float))
-            ]
-        elif isinstance(raw_levels, (int, float)):
-            levels = [float(raw_levels)]
-        else:
-            levels = []
-
-        if not levels:
-            return -200.0, -200.0
-        if len(levels) == 1:
-            levels.append(levels[0])
-        return levels[0], levels[1]
-
-
     def on_update(self, event):
 
-        # Read the level on VoiceMeeter's own background update thread.
-        # This keeps the Qt/UI thread free from a 30 FPS COM property read,
-        # which was causing the meter animation to feel laggy.
-        if event == "ldirty":
-            try:
-                raw_levels = self.vm.strip[0].levels.prefader
-                left, right = self._channel_levels(raw_levels)
-                self.bridge.mic_levels_received.emit(left, right)
-            except Exception as exc:
-                print(
-                    "Failed to read VoiceMeeter Mic levels: "
-                    f"{type(exc).__name__}: {exc}"
-                )
-
+        # Mic levels are sampled by MicLevelWorker, so the observer only
+        # forwards events. Never read levels here: this runs on VoiceMeeter's
+        # own update thread.
         self.bridge.event_received.emit(event)
 
 
@@ -338,10 +310,7 @@ class VUMeter(QProgressBar):
         self.setInvertedAppearance(False)
         self._display_level = float(self.minimum())
         self._target_level = float(self.minimum())
-        self._last_update = time.monotonic()
-        self._last_animation = self._last_update
-        self._last_level_event = time.monotonic()
-        self._hold_until = 0.0
+        self._last_animation = time.monotonic()
 
 
 
@@ -406,7 +375,6 @@ class VUMeter(QProgressBar):
             self.setToolTip(f"{level:.1f} dB")
 
         self._target_level = target
-        self._last_level_event = time.monotonic()
 
     def _update_visual_level(self, display):
         """Apply the current animated dB level to the meter widget."""
@@ -453,13 +421,6 @@ class VUMeter(QProgressBar):
         self._display_level = display
         self._update_visual_level(display)
 
-    def _apply_display_level(self):
-        display_level = int(round(self._display_level))
-        display_level = max(self.minimum(), min(self.maximum(), display_level))
-        self.setValue(display_level)
-
-
-
 class NumericEdit(QLineEdit):
     """Editable numeric field that selects its contents when focused."""
 
@@ -479,7 +440,7 @@ class CompressorControl(QWidget):
         super().__init__()
 
         self.vm = vm
-        self.comp = vm.strip[0].comp
+        self.comp = vm.strip[MIC_STRIP].comp
 
         self.setVisible(False)
 
@@ -758,7 +719,7 @@ class CompressorControl(QWidget):
             parameter = key.capitalize()
             try:
                 self.vm.sendtext(
-                    f"Strip[0].Comp.{parameter}={actual:.6f}"
+                    f"Strip[{MIC_STRIP}].Comp.{parameter}={actual:.6f}"
                 )
             except OSError:
                 # VoiceMeeter's native multi-parameter call can raise a
@@ -944,7 +905,7 @@ class GateControl(QWidget):
     def __init__(self, vm):
         super().__init__()
         self.vm = vm
-        self.gate = vm.strip[0].gate
+        self.gate = vm.strip[MIC_STRIP].gate
         self.setVisible(False)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -1012,6 +973,27 @@ class GateControl(QWidget):
                 return float(value) * 1000.0
         return float(value)
 
+    def set_parameter(self, key, actual):
+        """Set a gate parameter through the safest API path."""
+
+        # Gate Attack/Hold/Release are timing parameters like the compressor's
+        # Attack/Release, which can trigger a native access violation through
+        # the generic float setter. Use VoiceMeeter's own script parser instead.
+        if key in ("attack", "hold", "release"):
+            parameter = key.capitalize()
+            try:
+                self.vm.sendtext(
+                    f"Strip[{MIC_STRIP}].Gate.{parameter}={actual:.6f}"
+                )
+            except OSError:
+                # The native call can raise after VoiceMeeter has already
+                # accepted the command; the next pdirty event brings the
+                # authoritative value back, so this is not an invalid value.
+                return
+            return
+
+        setattr(self.gate, key, actual)
+
     def on_value_edit_finished(self, key):
         control = self.controls[key]
         edit = control["edit"]
@@ -1026,7 +1008,7 @@ class GateControl(QWidget):
             slider.setValue(int(round(actual * control["scale"])))
             slider.blockSignals(False)
             edit.setText(self.format_actual(key, actual))
-            setattr(self.gate, key, actual)
+            self.set_parameter(key, actual)
         except Exception as e:
             print(f"Invalid gate {key} value: {type(e).__name__}: {e}")
             try:
@@ -1038,7 +1020,7 @@ class GateControl(QWidget):
         actual = value / scale
         self.controls[key]["edit"].setText(self.format_actual(key, actual))
         try:
-            setattr(self.gate, key, actual)
+            self.set_parameter(key, actual)
         except Exception as e:
             print(f"Failed to set gate {key}: {type(e).__name__}: {e}")
 
@@ -1062,7 +1044,7 @@ class DenoiserControl(QWidget):
     def __init__(self, vm):
         super().__init__()
         self.vm = vm
-        self.denoiser = vm.strip[0].denoiser
+        self.denoiser = vm.strip[MIC_STRIP].denoiser
         self.setVisible(False)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -1804,6 +1786,8 @@ class StripWidget(QWidget):
 
     def update_level(self):
         """Read and apply the current Mic input level when explicitly requested."""
+        if self.vu_meter is None:
+            return
         try:
             self.set_channel_levels(self.get_channel_levels())
         except Exception as e:
@@ -1917,10 +1901,6 @@ class StripWidget(QWidget):
             )
 
             self.sync_routes()
-
-
-
-            self.update_level()
 
 
 
@@ -3247,7 +3227,7 @@ class MicLevelWorker(QObject):
     @Slot()
     def read_level(self):
         try:
-            raw_levels = self.vm.strip[0].levels.prefader
+            raw_levels = self.vm.strip[MIC_STRIP].levels.prefader
             if isinstance(raw_levels, (tuple, list)):
                 levels = [
                     float(value)
@@ -3311,10 +3291,6 @@ class MainWindow(QMainWindow):
 
             self.on_vm_event
 
-        )
-
-        self.vm_bridge.mic_levels_received.connect(
-            self.on_mic_levels_received
         )
 
         # Keep the visual VU meters updating independently of VoiceMeeter's
@@ -4024,7 +4000,7 @@ class MainWindow(QMainWindow):
 
 
     def on_mic_levels_received(self, left, right):
-        """Receive Mic levels from the VoiceMeeter worker thread."""
+        """Receive Mic levels from MicLevelWorker."""
         mic = self.strips.get("Mic")
         if mic is not None:
             mic.set_channel_levels((left, right))
@@ -4061,8 +4037,8 @@ class MainWindow(QMainWindow):
 
 
         elif event == "ldirty":
-            # Mic levels are delivered separately by VMObserver so the Qt
-            # thread never has to query VoiceMeeter for levels.
+            # Mic levels are sampled by MicLevelWorker, so the Qt thread
+            # never has to query VoiceMeeter for levels.
             pass
 
 
