@@ -2299,12 +2299,14 @@ class ApplicationAudioWorker(QObject):
                 return
             moved = 0
             last_error = ""
+            targets = self.__dict__.setdefault("_route_targets", {})
             for pid in pids:
                 try:
                     war.set_app_output_device(
                         process_id=pid,
                         device=device.id,
                     )
+                    targets[pid] = target_bus
                     moved += 1
                 except Exception as exc:
                     last_error = f"{type(exc).__name__}: {exc}"
@@ -2323,8 +2325,45 @@ class ApplicationAudioWorker(QObject):
                 f"{type(exc).__name__}: {exc}"
             )
         finally:
-            # Re-scan shortly so the row jumps to its new column.
-            QTimer.singleShot(700, self.refresh_sessions)
+            # Re-scan a few times: apps rebind their audio asynchronously, so
+            # the new session may take a moment to appear.
+            for delay in (300, 1200, 3000):
+                QTimer.singleShot(delay, self.refresh_sessions)
+
+    def _drop_stale_sessions(self, found):
+        """Remove the leftover session an app keeps on its old channel.
+
+        After an application is moved to another channel, Windows can keep the
+        old session on the previous endpoint until the app restarts its audio,
+        so one process would appear on two channels. When a process has
+        sessions on more than one channel, keep the channel it is actually
+        playing on (or the one it was just moved to) and drop the rest.
+        """
+        by_pid = {}
+        for group_key, info in found.items():
+            for member in info["sessions"]:
+                pid = member.get("pid") or 0
+                if pid:
+                    by_pid.setdefault(pid, []).append((group_key, info["bus"], member))
+
+        targets = getattr(self, "_route_targets", {})
+        for pid, entries in by_pid.items():
+            buses = {bus for _, bus, _ in entries}
+            if len(buses) < 2:
+                continue
+            active = {bus for _, bus, m in entries if m.get("state") == 1}
+            if len(active) == 1:
+                keep = next(iter(active))
+            elif targets.get(pid) in buses:
+                keep = targets[pid]
+            else:
+                continue  # genuinely playing on several channels: keep all
+            for group_key, bus, member in entries:
+                if bus != keep:
+                    found[group_key]["sessions"].remove(member)
+
+        for group_key in [k for k, i in found.items() if not i["sessions"]]:
+            del found[group_key]
 
     @staticmethod
     def _read_state(session):
@@ -2450,10 +2489,13 @@ class ApplicationAudioWorker(QObject):
                             "meter": meter,
                             "volume": state["volume"],
                             "muted": state["muted"],
+                            "pid": self._session_pid(session),
+                            "state": getattr(session, "State", 1),
                         })
                     except Exception:
                         continue
 
+            self._drop_stale_sessions(found)
             # Keep one stable application entry per executable + VoiceMeeter bus.
             # The individual Windows sessions remain available underneath it.
             for info in found.values():
