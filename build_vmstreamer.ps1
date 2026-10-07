@@ -35,7 +35,6 @@ try {
         --name VMStreamer `
         --icon $icon `
         --add-data "$icon;." `
-        --collect-all PySide6 `
         --collect-all pycaw `
         --collect-all comtypes `
         --collect-all voicemeeterlib `
