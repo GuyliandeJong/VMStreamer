@@ -1,0 +1,6 @@
+PySide6>=6.11
+voicemeeter-api>=2.7
+pycaw
+comtypes
+psutil
+winappaudiorouter

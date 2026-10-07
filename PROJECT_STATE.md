@@ -1,7 +1,7 @@
 # VMStreamer — Project State
 
-State date: 2026-10-06
-Current release: `v1.0.0`
+State date: 2026-10-07
+Current release: `v1.0.2`
 Branch: `main`
 Repository: https://github.com/GuylianDeJong/VMStreamer
 
@@ -17,7 +17,11 @@ Repository: https://github.com/GuylianDeJong/VMStreamer
 - voicemeeter-api 2.7.2
 - pycaw
 - comtypes
+- psutil
+- winappaudiorouter
 - PyInstaller
+
+Dependencies are listed in `requirements.txt`.
 - VoiceMeeter Potato 3.1.2.2
 
 Project:
@@ -39,6 +43,7 @@ Main controls:
 - Mute
 - Solo
 - Mono
+- Routing buttons (Mic: B1; Game, Chat, Media: A1–A3)
 
 Mic processing:
 
@@ -50,7 +55,7 @@ VoiceMeeter uses event-based bidirectional synchronization. `vm.init_thread()` i
 
 ## Audio
 
-Mic level sampling uses a dedicated worker.
+Mic level sampling uses a dedicated worker, which emits only when the level changed.
 
 Application audio uses a dedicated Python sampling loop at roughly 10 ms with GUI updates around 60 FPS.
 
@@ -74,7 +79,9 @@ Grouped volume/mute control applies to underlying Windows audio sessions. Group 
 
 Friendly names are used for known executables, including Microsoft Teams, Steam, Steam Client Web, SignalRGB Core, Brave Browser and Edge WebView2.
 
-Application hiding is implemented and persisted with QSettings.
+Application hiding is per channel (or all channels) and persisted with QSettings (`hidden_applications_v2`).
+
+Applications can be dragged to another column to move their audio (`winappaudiorouter`).
 
 ## UI
 
@@ -90,7 +97,11 @@ Application rows contain name, volume, percentage, mute control and live meter.
 
 Application sliders support click/drag.
 
-Mic Processing opens in a popup.
+Mic Processing opens in a popup. Compressor, Gate and Denoiser share `ProcessingPanel`.
+
+A draggable splitter separates the mixer from the lower panels (`splitter_v1`).
+
+Errors are logged to `%LOCALAPPDATA%\VMStreamer\vmstreamer.log`.
 
 Window position/size persists.
 
@@ -125,15 +136,13 @@ Output:
 
 ## Release
 
-`v1.0.0` is published and Latest.
+`v1.0.2` is the latest tag.
 
 Assets:
 
 - `VMStreamer.exe`
 - Source code zip
 - Source code tar.gz
-
-EXE size is approximately 245 MB.
 
 The EXE is distributed as a GitHub Release asset and is not committed to Git.
 
@@ -146,7 +155,8 @@ Do not regress:
 - dedicated mic worker
 - correct dB conversion
 - safe VoiceMeeter shutdown
-- compressor Attack/Release setter
+- compressor and gate timing setter (`sendtext`, `SCRIPT_KEYS`)
+- file logging (no `print()`)
 - application grouping
 - application hiding
 - QSettings persistence
@@ -154,6 +164,7 @@ Do not regress:
 - valid Qt base font
 - `resource_path()` icon loading
 - PyInstaller `--add-data`
+- no `--collect-all PySide6` in the build
 
 ## Build Locking
 
@@ -166,21 +177,7 @@ Stop-Process -Name VMStreamer -Force
 
 ## Future UI
 
-Possible future implementation:
-
-```text
-Mixer
-  ↓
-draggable horizontal divider
-  ↓
-Applications
-  ↓
-Mic Processing
-```
-
-Applications remain three columns: Game, Chat, Media.
-
-Not implemented yet.
+The draggable divider is implemented. Applications remain three columns: Game, Chat, Media.
 
 ## Future Work
 
@@ -188,7 +185,8 @@ Potential areas:
 
 - application routing rules
 - presets/profiles
-- application icons
+- configurable strip mapping
+- reconnect when VoiceMeeter restarts
 - volume persistence
 - pan/balance
 - additional VoiceMeeter controls
@@ -218,4 +216,4 @@ Do not blindly commit every untracked file.
 
 ## Next Session
 
-Keep v1.0.0 stable. Run and verify the existing application before starting a new feature. Make incremental changes and keep `main.py` as the single primary source file.
+Keep the released behaviour stable. Run and verify the existing application before starting a new feature. Make incremental changes and keep `main.py` as the single primary source file.

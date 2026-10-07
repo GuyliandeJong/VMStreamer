@@ -6,7 +6,7 @@ VMStreamer is a Windows desktop controller for VoiceMeeter Potato. It provides a
 
 Repository: https://github.com/GuylianDeJong/VMStreamer
 Current branch: `main`
-Current release: `v1.0.0` (published/latest)
+Current release: `v1.0.2` (published/latest)
 
 ## Environment
 
@@ -18,7 +18,11 @@ Current release: `v1.0.0` (published/latest)
 - voicemeeter-api 2.7.2
 - pycaw
 - comtypes
+- psutil
+- winappaudiorouter
 - PyInstaller
+
+Dependencies are listed in `requirements.txt`.
 - VoiceMeeter Potato 3.1.2.2
 - VS Code / PowerShell
 
@@ -46,7 +50,8 @@ STRIPS = {
 - Strip 6 = Chat / VAIO AUX
 - Strip 7 = Media / VAIO3
 - Mic hardware: Focusrite Scarlett 4i4 4th Gen + Beyerdynamic M 70 PRO X
-- Hardware Inputs 2–5, output buses and unnecessary routing controls are intentionally not exposed.
+- Hardware Inputs 2–5 and the output buses themselves are intentionally not exposed.
+- Routing buttons: Mic has B1; Game, Chat and Media have A1–A3.
 
 ## Main Controls
 
@@ -102,19 +107,23 @@ Denoiser:
 
 `knob`
 
-Compressor Attack/Release previously caused native API access violations. A safer native setter implementation fixed this. Do not casually replace it.
+Compressor Attack/Release previously caused native API access violations. A safer native setter implementation (`vm.sendtext`) fixed this, and the gate's Attack/Hold/Release use it too. Do not casually replace it.
+
+Compressor, Gate and Denoiser share one implementation, `ProcessingPanel`. Each block is a small subclass that lists its parameters in `PARAMETERS` and names its `sendtext` parameters in `SCRIPT_KEYS`. Display and typed-value handling live in `format_parameter()` and `parse_parameter()`.
+
+The processing controls are only synchronized while the popup is open, and once when it opens.
 
 ## Audio Meter Architecture
 
 ### Mic
 
-Mic level sampling runs in a dedicated worker and communicates with Qt through signals.
+Mic level sampling runs in a dedicated worker and communicates with Qt through signals. With `ldirty=True` voicemeeterlib serves levels from a cache that refreshes every `ratelimit` (50 ms), so the worker only emits when the value changed. `ldirty` events are not forwarded to the GUI thread.
 
 ### Applications
 
 Windows application audio sessions are sampled in a dedicated Python loop rather than a GUI-thread QTimer.
 
-Target sampling interval is approximately 10 ms; GUI delivery is approximately 60 FPS.
+Target sampling interval is approximately 10 ms; GUI delivery is approximately 60 FPS. Between two deliveries the highest sampled peak is kept. `update_peaks()` runs on the peak thread only.
 
 This replaced an earlier architecture that produced 400–560 ms sampling stalls and GUI hangs. The dedicated loop fixed the problem.
 
@@ -179,14 +188,21 @@ Rows provide:
 
 Volume bars support click/drag and scroll-wheel fine adjustment.
 
+Rows are not rebuilt while a row is being dragged or a volume slider is held. Application icons are cached per executable.
+
+## Moving Applications
+
+Dragging a row onto another column sets the per-app output device in Windows through `winappaudiorouter`. Windows re-binds the audio when the app next starts playback, so the row is marked as moving and the session list is scanned every second for a while.
+
 ## Application Hiding
 
 Implemented:
 
-- Right-click → Hide application
-- Eye button toggles hidden applications
-- Right-click hidden application → Show application
-- Hidden state persists via QSettings
+- Hiding is per virtual channel, or on all channels at once
+- Right-click → Hide on <channel> / Hide on all channels (and the matching Unhide entries)
+- Eye button per column, plus one for all channels, toggles hidden applications
+- Hidden state persists via QSettings key `hidden_applications_v2`
+- The hide key is the executable path, so an application that installs into a versioned folder gets a new key after an update (known limitation)
 - Hidden applications are excluded from normal visible counts
 - Hidden applications can be shown dimmed
 
@@ -200,7 +216,11 @@ Mic | Game | Chat | Media
 
 The UI is a compact dark design with monochrome Mic/Game/Chat/Media icons and the custom eye icon.
 
-Window position and size are persisted.
+Window position and size are persisted. A draggable splitter separates the mixer from the Applications / Mic Processing panels; its position is persisted under `splitter_v1`.
+
+## Logging
+
+Errors go through the `vmstreamer` logger, not `print()`: the packaged build is windowed and has no console. `setup_logging()` writes a rotating log to `%LOCALAPPDATA%\VMStreamer\vmstreamer.log` and installs hooks so uncaught exceptions are logged too.
 
 ## Icon / Packaging
 
@@ -238,6 +258,8 @@ PyInstaller must retain both:
 
 The first sets the Windows EXE icon; the second embeds the ICO so `main.py` can load it from `_MEIPASS`.
 
+Do not add `--collect-all PySide6`: it bundles every Qt module and makes the EXE about 245 MB. PyInstaller's own PySide6 hooks collect what `main.py` imports.
+
 Output:
 
 `dist\VMStreamer.exe`
@@ -270,15 +292,13 @@ Then rebuild.
 
 ## GitHub Release
 
-v1.0.0 is published and marked Latest.
+v1.0.2 is the latest tag.
 
 Release assets:
 
 - `VMStreamer.exe`
 - Source code zip
 - Source code tar.gz
-
-The EXE is approximately 245 MB.
 
 The EXE is a GitHub Release asset, not a Git-tracked file.
 
@@ -307,34 +327,16 @@ Do not blindly `git add .`; only commit files that belong in the repository.
 
 ## Future UI Direction
 
-A possible future feature is a vertical split between the upper mixer and lower applications area:
-
-```text
-Mixer
-  ↓
-draggable divider
-  ↓
-Applications
-  ↓
-Mic Processing
-```
-
-The applications section should remain three columns:
+The draggable divider between the mixer and the lower panels is implemented (see Main UI). The applications section should remain three columns:
 
 `Game | Chat | Media`
-
-The divider position could be persisted through QSettings.
-
-This is not implemented yet.
 
 ## Future Features
 
 Potential roadmap:
 
-- persistent application routing
 - mixer and microphone presets
 - profiles
-- application icons
 - executable-based routing rules
 - pan/balance and additional VoiceMeeter controls
 - global hotkeys

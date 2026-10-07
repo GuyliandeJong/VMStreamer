@@ -22,7 +22,9 @@ Control your main VoiceMeeter channels directly from VMStreamer:
 - Mute
 - Solo
 - Mono
-- Live audio level meters
+- Output routing buttons (B1 for the microphone, A1–A3 for Game, Chat and Media)
+- Live microphone level meters
+- Draggable divider between the mixer and the lower panels
 
 ### Application Audio
 
@@ -36,16 +38,22 @@ Applications are grouped according to their VoiceMeeter output:
 
 Each application provides:
 
+- Application icon
 - Individual volume control
 - Mute control
 - Live audio level indication
-- Automatic session detection
-- Search and refresh functionality
+- Automatic session detection and a Refresh button
+
+### Moving Applications
+
+Drag an application onto another column to move its audio to that channel. This sets the per-application output device in Windows, so it persists. Windows switches the application when it next starts playback; until then it is shown as moving.
 
 ### Hiding Applications
 
-- **Hide applications:** Right-click any application and select **Hide**. Hidden applications are removed from the normal application view and remembered between launches.
-- **Unhide applications:** Click the **eye button** next to Refresh to show hidden applications, then right-click the application and select **UnHide**.
+Hiding is per channel: an application can be hidden on Game and still be visible on Chat.
+
+- **Hide applications:** Right-click any application and select **Hide on <channel>** or **Hide on all channels**. Hidden applications are remembered between launches.
+- **Unhide applications:** Click the **eye button** in a column header (or the one next to Refresh, for all channels) to show hidden applications, then right-click the application and select **Unhide**.
 
 ### Microphone Processing
 
@@ -84,9 +92,6 @@ All processing controls are synchronized directly with VoiceMeeter.
 VMStreamer includes real-time audio monitoring for:
 
 - Microphone input
-- Game
-- Chat
-- Media
 - Windows applications
 
 Application audio monitoring uses a dedicated sampling loop to keep the interface responsive and prevent audio metering from blocking the graphical interface.
@@ -104,6 +109,7 @@ Application audio monitoring uses a dedicated sampling loop to keep the interfac
 - pycaw
 - comtypes
 - psutil
+- winappaudiorouter (moving applications between channels)
 
 ## Running From Source
 
@@ -129,7 +135,7 @@ Activate it:
 Install the required dependencies:
 
 ```powershell
-pip install PySide6 voicemeeter-api pycaw comtypes psutil
+pip install -r requirements.txt
 ```
 
 Run VMStreamer:
@@ -142,16 +148,10 @@ python main.py
 
 VMStreamer can be packaged into a standalone Windows executable using PyInstaller.
 
-Install PyInstaller:
+Run the build script from the project folder. It installs PyInstaller into the virtual environment when needed:
 
 ```powershell
-pip install pyinstaller
-```
-
-Build the application:
-
-```powershell
-pyinstaller --noconfirm --clean --onefile --windowed --name VMStreamer --icon vmstreamer.ico --add-data "vmstreamer.ico;." main.py
+.\build_vmstreamer.ps1
 ```
 
 The resulting executable will be located at:
@@ -160,14 +160,26 @@ The resulting executable will be located at:
 dist\VMStreamer.exe
 ```
 
+## Troubleshooting
+
+VMStreamer writes errors to a log file, which is the place to look when something does not work in the packaged build:
+
+```text
+%LOCALAPPDATA%\VMStreamer\vmstreamer.log
+```
+
 ## Project Structure
 
 ```text
 VMStreamer/
-├── main.py
+├── main.py                   application source
+├── vmstreamer_launcher.py    entry point of the packaged EXE
+├── build_vmstreamer.ps1      builds dist\VMStreamer.exe
+├── requirements.txt
 ├── vmstreamer.ico
-├── README.md
-└── .gitignore
+├── HANDOVER.md
+├── PROJECT_STATE.md
+└── README.md
 ```
 
 Build files, the Python virtual environment, and other generated files are intentionally excluded from Git.
@@ -179,9 +191,11 @@ VMStreamer currently works with **VoiceMeeter Potato** and uses the following ch
 | VMStreamer | VoiceMeeter | Windows Device |
 | --- | --- | --- |
 | Mic | Hardware Input 1 | Focusrite / microphone |
-| Game | Strip 6 | VoiceMeeter VAIO |
-| Chat | Strip 7 | VoiceMeeter VAIO AUX |
-| Media | Strip 8 | VoiceMeeter VAIO3 |
+| Game | Virtual Input 1 (VAIO) | VoiceMeeter VAIO |
+| Chat | Virtual Input 2 (AUX) | VoiceMeeter VAIO AUX |
+| Media | Virtual Input 3 (VAIO3) | VoiceMeeter VAIO3 |
+
+This mapping is currently fixed in `main.py` (`STRIPS`).
 
 Windows applications routed through these VoiceMeeter devices are automatically detected and displayed in the corresponding VMStreamer section.
 
@@ -219,10 +233,10 @@ VMStreamer is actively developed. The following features are planned or being co
 
 ### Application Management
 
-- [ ] Display application icons
+- [x] Display application icons
 - [ ] Remember application volume levels
 - [ ] Automatically route applications based on executable
-- [ ] Move applications between Game, Chat, and Media
+- [x] Move applications between Game, Chat, and Media
 - [ ] Improved application session detection
 - [ ] Application routing rules
 
@@ -268,7 +282,7 @@ VMStreamer is actively developed. The following features are planned or being co
 
 - [ ] Windows installer
 - [ ] Automatic updates
-- [ ] GitHub Releases
+- [x] GitHub Releases
 - [ ] Versioned release builds
 - [ ] Release notes and changelogs
 
